@@ -33,6 +33,8 @@ struct jkps_render_key {
 	bool down;
 	uint64_t total;
 	float trail[JKPS_TRAIL_SEGMENTS]; /* 0..1 intensity, index 0 = closest to the key box */
+	uint32_t color_idle;
+	uint32_t color_pressed;
 };
 
 /* Everything the renderer needs to know to draw one frame. All colors are
@@ -48,8 +50,6 @@ struct jkps_render_params {
 	int corner_radius; /* 0 = square corners; up to key_size/2 for a pill/circle look */
 	bool show_press_trail;
 
-	uint32_t color_idle;
-	uint32_t color_pressed;
 	uint32_t color_text;
 	uint32_t color_bg;
 

@@ -50,8 +50,8 @@ struct jkps_source_context {
 	bool show_press_trail;
 	float trail[JKPS_MAX_KEYS][JKPS_TRAIL_SEGMENTS];
 
-	uint32_t color_idle;
-	uint32_t color_pressed;
+	uint32_t key_color_idle[JKPS_MAX_KEYS];
+	uint32_t key_color_pressed[JKPS_MAX_KEYS];
 	uint32_t color_text;
 	uint32_t color_bg;
 
@@ -99,6 +99,8 @@ static void rebuild_canvas(struct jkps_source_context *ctx)
 	p.key_size = ctx->key_size;
 	p.key_spacing = ctx->key_spacing;
 	p.key_font_size = ctx->key_font_size;
+	p.corner_radius = ctx->corner_radius;
+	p.show_press_trail = ctx->show_press_trail;
 	p.show_kps = ctx->show_kps;
 	p.show_total = ctx->show_total;
 	p.show_bpm = ctx->show_bpm;
@@ -165,6 +167,12 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 				sizeof(ctx->key_label[i]) - 1);
 			ctx->key_label[i][sizeof(ctx->key_label[i]) - 1] = '\0';
 		}
+
+		snprintf(key, sizeof(key), "key_color_idle_%d", i);
+		ctx->key_color_idle[i] = (uint32_t)obs_data_get_int(settings, key);
+
+		snprintf(key, sizeof(key), "key_color_pressed_%d", i);
+		ctx->key_color_pressed[i] = (uint32_t)obs_data_get_int(settings, key);
 	}
 
 	ctx->vertical_layout = obs_data_get_bool(settings, "vertical_layout");
@@ -174,8 +182,6 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 	ctx->corner_radius = (int)obs_data_get_int(settings, "corner_radius");
 	ctx->show_press_trail = obs_data_get_bool(settings, "show_press_trail");
 
-	ctx->color_idle = (uint32_t)obs_data_get_int(settings, "color_idle");
-	ctx->color_pressed = (uint32_t)obs_data_get_int(settings, "color_pressed");
 	ctx->color_text = (uint32_t)obs_data_get_int(settings, "color_text");
 	ctx->color_bg = (uint32_t)obs_data_get_int(settings, "color_bg");
 
@@ -200,6 +206,12 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 
 		snprintf(key, sizeof(key), "key_label_%d", i);
 		obs_data_set_default_string(settings, key, "");
+
+		snprintf(key, sizeof(key), "key_color_idle_%d", i);
+		obs_data_set_default_int(settings, key, 0xFF3A3A3A);
+
+		snprintf(key, sizeof(key), "key_color_pressed_%d", i);
+		obs_data_set_default_int(settings, key, 0xFF37B2FF);
 	}
 
 	obs_data_set_default_bool(settings, "vertical_layout", false);
@@ -209,8 +221,6 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "corner_radius", 0);
 	obs_data_set_default_bool(settings, "show_press_trail", false);
 
-	obs_data_set_default_int(settings, "color_idle", 0xFF3A3A3A);
-	obs_data_set_default_int(settings, "color_pressed", 0xFF37B2FF);
 	obs_data_set_default_int(settings, "color_text", 0xFFFFFFFF);
 	obs_data_set_default_int(settings, "color_bg", 0x00000000);
 
@@ -221,26 +231,67 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "stats_color", 0xFFFFFFFF);
 }
 
-/* Quick-apply theme presets: each bundles key/text/background colors with a
- * corner style, so one click gives a coherent look instead of the user
- * having to tweak 5 separate color pickers + a radius slider by hand. */
+/* Quick-apply theme presets: each bundles per-key colors with a corner
+ * style, so one click gives a coherent look instead of the user having to
+ * tweak up to 16 color pickers + a radius slider by hand.
+ *
+ * key_idle/key_pressed are small palettes (1 to 4 colors) that get cycled
+ * across the 8 key slots: simple themes use a single repeated color, while
+ * "directional" themes (DDR, FNF) use a 4-color palette matching the
+ * default D F J K layout so each lane gets its own hue, the way those
+ * games' own arrow skins do. Note: these are original color palettes
+ * inspired by each game's look, not reproductions of any specific artist's
+ * noteskin/skin graphics. */
 struct jkps_theme {
 	const char *id;         /* used as the button's property name */
 	const char *locale_key; /* obs_module_text() key for the button label */
-	uint32_t color_idle;
-	uint32_t color_pressed;
+	const uint32_t *key_idle;
+	const uint32_t *key_pressed;
+	size_t key_color_count;
 	uint32_t color_text;
 	uint32_t color_bg;
 	uint32_t stats_color;
 	int corner_radius;
 };
 
+static const uint32_t jkps_pal_classic_idle[] = {0xFF3A3A3A};
+static const uint32_t jkps_pal_classic_pressed[] = {0xFF37B2FF};
+
+static const uint32_t jkps_pal_neon_idle[] = {0xFF2E1A3D};
+static const uint32_t jkps_pal_neon_pressed[] = {0xFFFF2BD6};
+
+static const uint32_t jkps_pal_retro_idle[] = {0xFF7C2D2D};
+static const uint32_t jkps_pal_retro_pressed[] = {0xFF00D400};
+
+static const uint32_t jkps_pal_minimal_idle[] = {0xFFE5E5E5};
+static const uint32_t jkps_pal_minimal_pressed[] = {0xFF3A3A3A};
+
+static const uint32_t jkps_pal_pastel_idle[] = {0xFFF7D6E8};
+static const uint32_t jkps_pal_pastel_pressed[] = {0xFFC9F7DE};
+
+/* osu!mania-inspired: alternating blue/white lanes with the game's brand
+ * pink as the hit accent, and pill-shaped corners evoking circular skins. */
+static const uint32_t jkps_pal_osu_idle[] = {0xFFF5B67E, 0xFFE0E0E0};
+static const uint32_t jkps_pal_osu_pressed[] = {0xFF42B9F5, 0xFFAB66FF};
+
+/* DDR-inspired: one common arcade-style 4-panel palette (blue / orange /
+ * green / red). Actual DDR noteskins vary a lot by mix/version - this is a
+ * clean original interpretation, easy to re-tweak per key afterwards. */
+static const uint32_t jkps_pal_ddr_idle[] = {0xFF7A3B1A, 0xFF1A5E7A, 0xFF1A7A2E, 0xFF1A2A7A};
+static const uint32_t jkps_pal_ddr_pressed[] = {0xFF33B0FF, 0xFF33D4FF, 0xFF4DDB6E, 0xFF4D5FFF};
+
+/* FNF-inspired: the four lane hues most players recognize (purple/magenta,
+ * cyan, green, red), left-to-right matching the default D F J K layout. */
+static const uint32_t jkps_pal_fnf_idle[] = {0xFF6E2E5C, 0xFF2E6E6E, 0xFF2E6E31, 0xFF6E2E30};
+static const uint32_t jkps_pal_fnf_pressed[] = {0xFFD680E0, 0xFFFFE666, 0xFF60FF6B, 0xFF7F7AFF};
+
 static const struct jkps_theme jkps_themes[] = {
 	{
 		.id = "theme_classic",
 		.locale_key = "JkpsSource.ThemeClassic",
-		.color_idle = 0xFF3A3A3A,
-		.color_pressed = 0xFF37B2FF,
+		.key_idle = jkps_pal_classic_idle,
+		.key_pressed = jkps_pal_classic_pressed,
+		.key_color_count = 1,
 		.color_text = 0xFFFFFFFF,
 		.color_bg = 0x00000000,
 		.stats_color = 0xFFFFFFFF,
@@ -249,8 +300,9 @@ static const struct jkps_theme jkps_themes[] = {
 	{
 		.id = "theme_neon",
 		.locale_key = "JkpsSource.ThemeNeon",
-		.color_idle = 0xFF2E1A3D,
-		.color_pressed = 0xFFFF2BD6,
+		.key_idle = jkps_pal_neon_idle,
+		.key_pressed = jkps_pal_neon_pressed,
+		.key_color_count = 1,
 		.color_text = 0xFF00F5FF,
 		.color_bg = 0x00000000,
 		.stats_color = 0xFF00F5FF,
@@ -259,8 +311,9 @@ static const struct jkps_theme jkps_themes[] = {
 	{
 		.id = "theme_retro",
 		.locale_key = "JkpsSource.ThemeRetroArcade",
-		.color_idle = 0xFF7C2D2D,
-		.color_pressed = 0xFF00D400,
+		.key_idle = jkps_pal_retro_idle,
+		.key_pressed = jkps_pal_retro_pressed,
+		.key_color_count = 1,
 		.color_text = 0xFF000000,
 		.color_bg = 0xFF0A0A0A,
 		.stats_color = 0xFF00FF00,
@@ -269,8 +322,9 @@ static const struct jkps_theme jkps_themes[] = {
 	{
 		.id = "theme_minimal",
 		.locale_key = "JkpsSource.ThemeMinimal",
-		.color_idle = 0xFFE5E5E5,
-		.color_pressed = 0xFF3A3A3A,
+		.key_idle = jkps_pal_minimal_idle,
+		.key_pressed = jkps_pal_minimal_pressed,
+		.key_color_count = 1,
 		.color_text = 0xFF222222,
 		.color_bg = 0x00000000,
 		.stats_color = 0xFF222222,
@@ -279,12 +333,46 @@ static const struct jkps_theme jkps_themes[] = {
 	{
 		.id = "theme_pastel",
 		.locale_key = "JkpsSource.ThemePastel",
-		.color_idle = 0xFFF7D6E8,
-		.color_pressed = 0xFFC9F7DE,
+		.key_idle = jkps_pal_pastel_idle,
+		.key_pressed = jkps_pal_pastel_pressed,
+		.key_color_count = 1,
 		.color_text = 0xFF6B4E6E,
 		.color_bg = 0x00000000,
 		.stats_color = 0xFF6B4E6E,
 		.corner_radius = 16,
+	},
+	{
+		.id = "theme_osu",
+		.locale_key = "JkpsSource.ThemeOsu",
+		.key_idle = jkps_pal_osu_idle,
+		.key_pressed = jkps_pal_osu_pressed,
+		.key_color_count = 2,
+		.color_text = 0xFF333333,
+		.color_bg = 0x00000000,
+		.stats_color = 0xFF42B9F5,
+		.corner_radius = 30, /* circle/pill look, matching mania-style skins */
+	},
+	{
+		.id = "theme_ddr",
+		.locale_key = "JkpsSource.ThemeDdr",
+		.key_idle = jkps_pal_ddr_idle,
+		.key_pressed = jkps_pal_ddr_pressed,
+		.key_color_count = 4,
+		.color_text = 0xFFFFFFFF,
+		.color_bg = 0x00000000,
+		.stats_color = 0xFFFFFFFF,
+		.corner_radius = 12,
+	},
+	{
+		.id = "theme_fnf",
+		.locale_key = "JkpsSource.ThemeFnf",
+		.key_idle = jkps_pal_fnf_idle,
+		.key_pressed = jkps_pal_fnf_pressed,
+		.key_color_count = 4,
+		.color_text = 0xFF1A1A1A,
+		.color_bg = 0x00000000,
+		.stats_color = 0xFFFFFFFF,
+		.corner_radius = 10,
 	},
 };
 #define JKPS_THEME_COUNT (sizeof(jkps_themes) / sizeof(jkps_themes[0]))
@@ -293,8 +381,17 @@ static bool jkps_apply_theme(struct jkps_source_context *ctx, const struct jkps_
 {
 	obs_data_t *settings = obs_source_get_settings(ctx->source);
 
-	obs_data_set_int(settings, "color_idle", theme->color_idle);
-	obs_data_set_int(settings, "color_pressed", theme->color_pressed);
+	char key[32];
+	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
+		size_t slot = (size_t)i % theme->key_color_count;
+
+		snprintf(key, sizeof(key), "key_color_idle_%d", i);
+		obs_data_set_int(settings, key, theme->key_idle[slot]);
+
+		snprintf(key, sizeof(key), "key_color_pressed_%d", i);
+		obs_data_set_int(settings, key, theme->key_pressed[slot]);
+	}
+
 	obs_data_set_int(settings, "color_text", theme->color_text);
 	obs_data_set_int(settings, "color_bg", theme->color_bg);
 	obs_data_set_int(settings, "stats_color", theme->stats_color);
@@ -336,10 +433,13 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 
 	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
 		char group_name[32], enabled_name[32], vcode_name[32], label_name[32], group_title[64];
+		char color_idle_name[32], color_pressed_name[32];
 		snprintf(group_name, sizeof(group_name), "key_group_%d", i);
 		snprintf(enabled_name, sizeof(enabled_name), "key_enabled_%d", i);
 		snprintf(vcode_name, sizeof(vcode_name), "key_vcode_%d", i);
 		snprintf(label_name, sizeof(label_name), "key_label_%d", i);
+		snprintf(color_idle_name, sizeof(color_idle_name), "key_color_idle_%d", i);
+		snprintf(color_pressed_name, sizeof(color_pressed_name), "key_color_pressed_%d", i);
 		snprintf(group_title, sizeof(group_title), "%s %d", obs_module_text("JkpsSource.Key"), i + 1);
 
 		obs_properties_t *group = obs_properties_create();
@@ -351,6 +451,8 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 			obs_property_list_add_int(list, jkps_keynames[k].label, jkps_keynames[k].vk);
 
 		obs_properties_add_text(group, label_name, obs_module_text("JkpsSource.KeyLabel"), OBS_TEXT_DEFAULT);
+		obs_properties_add_color(group, color_idle_name, obs_module_text("JkpsSource.ColorIdle"));
+		obs_properties_add_color(group, color_pressed_name, obs_module_text("JkpsSource.ColorPressed"));
 
 		obs_properties_add_group(props, group_name, group_title, OBS_GROUP_NORMAL, group);
 	}
@@ -362,8 +464,6 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_properties_add_int(props, "corner_radius", obs_module_text("JkpsSource.CornerRadius"), 0, 150, 1);
 	obs_properties_add_bool(props, "show_press_trail", obs_module_text("JkpsSource.ShowPressTrail"));
 
-	obs_properties_add_color(props, "color_idle", obs_module_text("JkpsSource.ColorIdle"));
-	obs_properties_add_color(props, "color_pressed", obs_module_text("JkpsSource.ColorPressed"));
 	obs_properties_add_color(props, "color_text", obs_module_text("JkpsSource.ColorText"));
 	obs_properties_add_color_alpha(props, "color_bg", obs_module_text("JkpsSource.ColorBg"));
 
@@ -443,6 +543,8 @@ static void jkps_source_video_tick(void *data, float seconds)
 		p.keys[active].label = ctx->key_label[i];
 		p.keys[active].down = ctx->keys[i].down;
 		p.keys[active].total = ctx->keys[i].total_presses;
+		p.keys[active].color_idle = ctx->key_color_idle[i];
+		p.keys[active].color_pressed = ctx->key_color_pressed[i];
 		memcpy(p.keys[active].trail, ctx->trail[i], sizeof(p.keys[active].trail));
 		active++;
 	}
@@ -456,8 +558,6 @@ static void jkps_source_video_tick(void *data, float seconds)
 	p.key_font_size = ctx->key_font_size;
 	p.corner_radius = ctx->corner_radius;
 	p.show_press_trail = ctx->show_press_trail;
-	p.color_idle = ctx->color_idle;
-	p.color_pressed = ctx->color_pressed;
 	p.color_text = ctx->color_text;
 	p.color_bg = ctx->color_bg;
 	p.show_kps = ctx->show_kps;

@@ -298,7 +298,7 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 				else
 					seg_y -= offset; /* trail extends upward per column */
 
-				uint32_t base = p->color_pressed;
+				uint32_t base = p->keys[i].color_pressed;
 				uint8_t base_a = (uint8_t)((base >> 24) & 0xFF);
 				uint8_t seg_a = (uint8_t)(base_a * intensity);
 				uint32_t seg_color = (base & 0x00FFFFFFu) | ((uint32_t)seg_a << 24);
@@ -307,7 +307,7 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 			}
 		}
 
-		uint32_t box_color = p->keys[i].down ? p->color_pressed : p->color_idle;
+		uint32_t box_color = p->keys[i].down ? p->keys[i].color_pressed : p->keys[i].color_idle;
 		fill_rounded_rect(pixels, width, height, x, y, p->key_size, p->key_size, box_color, p->corner_radius);
 		draw_text_centered(pixels, width, height, x, y, p->key_size, p->key_size, p->keys[i].label,
 				   p->key_font_size, p->color_text);
