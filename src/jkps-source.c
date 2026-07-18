@@ -231,7 +231,7 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 		obs_properties_add_bool(group, enabled_name, obs_module_text("JkpsSource.KeyEnabled"));
 
 		obs_property_t *list = obs_properties_add_list(group, vcode_name, obs_module_text("JkpsSource.KeyBind"),
-								OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+							       OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 		for (size_t k = 0; k < jkps_keynames_count; k++)
 			obs_property_list_add_int(list, jkps_keynames[k].label, jkps_keynames[k].vk);
 
@@ -257,7 +257,7 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_properties_add_color(props, "stats_color", obs_module_text("JkpsSource.StatsColor"));
 
 	obs_properties_add_button(props, "reset_stats_button", obs_module_text("JkpsSource.ResetButton"),
-				   jkps_reset_button_clicked);
+				  jkps_reset_button_clicked);
 
 	UNUSED_PARAMETER(ctx);
 	return props;
@@ -269,8 +269,8 @@ static void *jkps_source_create(obs_data_t *settings, obs_source_t *source)
 	ctx->source = source;
 
 	ctx->reset_hotkey_id = obs_hotkey_register_source(source, "JkpsSource.ResetHotkey",
-							    obs_module_text("JkpsSource.ResetHotkeyDesc"),
-							    jkps_source_reset_stats, ctx);
+							  obs_module_text("JkpsSource.ResetHotkeyDesc"),
+							  jkps_source_reset_stats, ctx);
 
 	jkps_source_update(ctx, settings);
 	return ctx;
@@ -370,7 +370,7 @@ static uint32_t jkps_source_get_height(void *data)
 struct obs_source_info jkps_source_info = {
 	.id = "jkps_source",
 	.type = OBS_SOURCE_TYPE_INPUT,
-	.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW,
+	.output_flags = OBS_SOURCE_VIDEO,
 	.get_name = jkps_source_get_name,
 	.create = jkps_source_create,
 	.destroy = jkps_source_destroy,
