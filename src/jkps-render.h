@@ -49,6 +49,7 @@ struct jkps_render_params {
 	int key_font_size;
 	int corner_radius; /* 0 = square corners; up to key_size/2 for a pill/circle look */
 	bool show_press_trail;
+	bool show_key_labels;
 
 	uint32_t color_text;
 	uint32_t color_bg;

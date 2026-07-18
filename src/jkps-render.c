@@ -309,8 +309,9 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 
 		uint32_t box_color = p->keys[i].down ? p->keys[i].color_pressed : p->keys[i].color_idle;
 		fill_rounded_rect(pixels, width, height, x, y, p->key_size, p->key_size, box_color, p->corner_radius);
-		draw_text_centered(pixels, width, height, x, y, p->key_size, p->key_size, p->keys[i].label,
-				   p->key_font_size, p->color_text);
+		if (p->show_key_labels)
+			draw_text_centered(pixels, width, height, x, y, p->key_size, p->key_size, p->keys[i].label,
+					   p->key_font_size, p->color_text);
 	}
 
 	int line_h = stats_line_height(p);

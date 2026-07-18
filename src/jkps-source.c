@@ -48,6 +48,7 @@ struct jkps_source_context {
 	int key_font_size;
 	int corner_radius;
 	bool show_press_trail;
+	bool show_key_labels;
 	float trail[JKPS_MAX_KEYS][JKPS_TRAIL_SEGMENTS];
 
 	uint32_t key_color_idle[JKPS_MAX_KEYS];
@@ -181,6 +182,7 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 	ctx->key_font_size = (int)obs_data_get_int(settings, "key_font_size");
 	ctx->corner_radius = (int)obs_data_get_int(settings, "corner_radius");
 	ctx->show_press_trail = obs_data_get_bool(settings, "show_press_trail");
+	ctx->show_key_labels = obs_data_get_bool(settings, "show_key_labels");
 
 	ctx->color_text = (uint32_t)obs_data_get_int(settings, "color_text");
 	ctx->color_bg = (uint32_t)obs_data_get_int(settings, "color_bg");
@@ -220,6 +222,7 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "key_font_size", 22);
 	obs_data_set_default_int(settings, "corner_radius", 0);
 	obs_data_set_default_bool(settings, "show_press_trail", false);
+	obs_data_set_default_bool(settings, "show_key_labels", true);
 
 	obs_data_set_default_int(settings, "color_text", 0xFFFFFFFF);
 	obs_data_set_default_int(settings, "color_bg", 0x00000000);
@@ -463,6 +466,7 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_properties_add_int(props, "key_font_size", obs_module_text("JkpsSource.KeyFontSize"), 8, 150, 1);
 	obs_properties_add_int(props, "corner_radius", obs_module_text("JkpsSource.CornerRadius"), 0, 150, 1);
 	obs_properties_add_bool(props, "show_press_trail", obs_module_text("JkpsSource.ShowPressTrail"));
+	obs_properties_add_bool(props, "show_key_labels", obs_module_text("JkpsSource.ShowKeyLabels"));
 
 	obs_properties_add_color(props, "color_text", obs_module_text("JkpsSource.ColorText"));
 	obs_properties_add_color_alpha(props, "color_bg", obs_module_text("JkpsSource.ColorBg"));
@@ -558,6 +562,7 @@ static void jkps_source_video_tick(void *data, float seconds)
 	p.key_font_size = ctx->key_font_size;
 	p.corner_radius = ctx->corner_radius;
 	p.show_press_trail = ctx->show_press_trail;
+	p.show_key_labels = ctx->show_key_labels;
 	p.color_text = ctx->color_text;
 	p.color_bg = ctx->color_bg;
 	p.show_kps = ctx->show_kps;
