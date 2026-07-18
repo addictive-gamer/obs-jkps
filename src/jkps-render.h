@@ -26,7 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 extern "C" {
 #endif
 
-#define JKPS_TRAIL_SEGMENTS 6
+#define JKPS_TRAIL_SEGMENTS 10
 
 struct jkps_render_key {
 	const char *label;
@@ -50,6 +50,7 @@ struct jkps_render_params {
 	int corner_radius; /* 0 = square corners; up to key_size/2 for a pill/circle look */
 	bool show_press_trail;
 	bool show_key_labels;
+	uint32_t trail_color;
 
 	uint32_t color_text;
 	uint32_t color_bg;

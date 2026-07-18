@@ -49,6 +49,7 @@ struct jkps_source_context {
 	int corner_radius;
 	bool show_press_trail;
 	bool show_key_labels;
+	uint32_t trail_color;
 	float trail[JKPS_MAX_KEYS][JKPS_TRAIL_SEGMENTS];
 
 	uint32_t key_color_idle[JKPS_MAX_KEYS];
@@ -183,6 +184,7 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 	ctx->corner_radius = (int)obs_data_get_int(settings, "corner_radius");
 	ctx->show_press_trail = obs_data_get_bool(settings, "show_press_trail");
 	ctx->show_key_labels = obs_data_get_bool(settings, "show_key_labels");
+	ctx->trail_color = (uint32_t)obs_data_get_int(settings, "trail_color");
 
 	ctx->color_text = (uint32_t)obs_data_get_int(settings, "color_text");
 	ctx->color_bg = (uint32_t)obs_data_get_int(settings, "color_bg");
@@ -223,6 +225,7 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "corner_radius", 0);
 	obs_data_set_default_bool(settings, "show_press_trail", false);
 	obs_data_set_default_bool(settings, "show_key_labels", true);
+	obs_data_set_default_int(settings, "trail_color", 0xFFFFFFFF);
 
 	obs_data_set_default_int(settings, "color_text", 0xFFFFFFFF);
 	obs_data_set_default_int(settings, "color_bg", 0x00000000);
@@ -254,6 +257,7 @@ struct jkps_theme {
 	uint32_t color_text;
 	uint32_t color_bg;
 	uint32_t stats_color;
+	uint32_t trail_color;
 	int corner_radius;
 };
 
@@ -298,6 +302,7 @@ static const struct jkps_theme jkps_themes[] = {
 		.color_text = 0xFFFFFFFF,
 		.color_bg = 0x00000000,
 		.stats_color = 0xFFFFFFFF,
+		.trail_color = 0xFFFFFFFF,
 		.corner_radius = 6,
 	},
 	{
@@ -309,6 +314,7 @@ static const struct jkps_theme jkps_themes[] = {
 		.color_text = 0xFF00F5FF,
 		.color_bg = 0x00000000,
 		.stats_color = 0xFF00F5FF,
+		.trail_color = 0xFF00F5FF,
 		.corner_radius = 30, /* pill-shaped at the default 60px key size */
 	},
 	{
@@ -320,6 +326,7 @@ static const struct jkps_theme jkps_themes[] = {
 		.color_text = 0xFF000000,
 		.color_bg = 0xFF0A0A0A,
 		.stats_color = 0xFF00FF00,
+		.trail_color = 0xFF00FF00,
 		.corner_radius = 0, /* crisp, blocky pixel-art corners */
 	},
 	{
@@ -331,6 +338,7 @@ static const struct jkps_theme jkps_themes[] = {
 		.color_text = 0xFF222222,
 		.color_bg = 0x00000000,
 		.stats_color = 0xFF222222,
+		.trail_color = 0xFF222222,
 		.corner_radius = 2,
 	},
 	{
@@ -342,6 +350,7 @@ static const struct jkps_theme jkps_themes[] = {
 		.color_text = 0xFF6B4E6E,
 		.color_bg = 0x00000000,
 		.stats_color = 0xFF6B4E6E,
+		.trail_color = 0xFF6B4E6E,
 		.corner_radius = 16,
 	},
 	{
@@ -353,6 +362,7 @@ static const struct jkps_theme jkps_themes[] = {
 		.color_text = 0xFF333333,
 		.color_bg = 0x00000000,
 		.stats_color = 0xFF42B9F5,
+		.trail_color = 0xFF42B9F5,
 		.corner_radius = 30, /* circle/pill look, matching mania-style skins */
 	},
 	{
@@ -364,6 +374,7 @@ static const struct jkps_theme jkps_themes[] = {
 		.color_text = 0xFFFFFFFF,
 		.color_bg = 0x00000000,
 		.stats_color = 0xFFFFFFFF,
+		.trail_color = 0xFFFFFFFF,
 		.corner_radius = 12,
 	},
 	{
@@ -375,6 +386,7 @@ static const struct jkps_theme jkps_themes[] = {
 		.color_text = 0xFF1A1A1A,
 		.color_bg = 0x00000000,
 		.stats_color = 0xFFFFFFFF,
+		.trail_color = 0xFFFFFFFF,
 		.corner_radius = 10,
 	},
 };
@@ -398,6 +410,7 @@ static bool jkps_apply_theme(struct jkps_source_context *ctx, const struct jkps_
 	obs_data_set_int(settings, "color_text", theme->color_text);
 	obs_data_set_int(settings, "color_bg", theme->color_bg);
 	obs_data_set_int(settings, "stats_color", theme->stats_color);
+	obs_data_set_int(settings, "trail_color", theme->trail_color);
 	obs_data_set_int(settings, "corner_radius", theme->corner_radius);
 
 	obs_source_update(ctx->source, settings);
@@ -467,6 +480,7 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_properties_add_int(props, "corner_radius", obs_module_text("JkpsSource.CornerRadius"), 0, 150, 1);
 	obs_properties_add_bool(props, "show_press_trail", obs_module_text("JkpsSource.ShowPressTrail"));
 	obs_properties_add_bool(props, "show_key_labels", obs_module_text("JkpsSource.ShowKeyLabels"));
+	obs_properties_add_color_alpha(props, "trail_color", obs_module_text("JkpsSource.TrailColor"));
 
 	obs_properties_add_color(props, "color_text", obs_module_text("JkpsSource.ColorText"));
 	obs_properties_add_color_alpha(props, "color_bg", obs_module_text("JkpsSource.ColorBg"));
@@ -563,6 +577,7 @@ static void jkps_source_video_tick(void *data, float seconds)
 	p.corner_radius = ctx->corner_radius;
 	p.show_press_trail = ctx->show_press_trail;
 	p.show_key_labels = ctx->show_key_labels;
+	p.trail_color = ctx->trail_color;
 	p.color_text = ctx->color_text;
 	p.color_bg = ctx->color_bg;
 	p.show_kps = ctx->show_kps;

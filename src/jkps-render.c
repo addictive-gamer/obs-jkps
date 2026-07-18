@@ -291,6 +291,13 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 				if (intensity <= 0.01f)
 					continue;
 
+				/* Taper the far end of the trail smoothly instead of
+				 * letting it pop out of existence at the last segment. */
+				float tip_fade = (float)(JKPS_TRAIL_SEGMENTS - s) / (float)JKPS_TRAIL_SEGMENTS;
+				intensity *= tip_fade;
+				if (intensity <= 0.01f)
+					continue;
+
 				int seg_x = x, seg_y = y;
 				int offset = (s + 1) * (p->key_size + p->key_spacing);
 				if (p->vertical_layout)
@@ -298,7 +305,7 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 				else
 					seg_y -= offset; /* trail extends upward per column */
 
-				uint32_t base = p->keys[i].color_pressed;
+				uint32_t base = p->trail_color;
 				uint8_t base_a = (uint8_t)((base >> 24) & 0xFF);
 				uint8_t seg_a = (uint8_t)(base_a * intensity);
 				uint32_t seg_color = (base & 0x00FFFFFFu) | ((uint32_t)seg_a << 24);
