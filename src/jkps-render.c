@@ -347,20 +347,20 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 				if (fill_frac > 1.0f)
 					fill_frac = 1.0f;
 
-				int bar_w = (p->key_size * 6) / 10;
-				if (bar_w < 4)
-					bar_w = 4;
-				int bar_x = x + (p->key_size - bar_w) / 2;
-				int fill_h = (int)(p->key_size * fill_frac);
-				if (fill_h < 2)
-					fill_h = 2;
+				int bar_h = (p->key_size * 6) / 10;
+				if (bar_h < 4)
+					bar_h = 4;
+				int bar_y = y + (p->key_size - bar_h) / 2;
+				int fill_w = (int)(p->key_size * fill_frac);
+				if (fill_w < 2)
+					fill_w = 2;
 
 				/* Dim background track, then the active fill anchored
-				 * to the bottom so it reads like a level meter. */
-				fill_rounded_rect(pixels, width, height, bar_x, y, bar_w, p->key_size,
+				 * to the left so it reads like a horizontal level meter. */
+				fill_rounded_rect(pixels, width, height, x, bar_y, p->key_size, bar_h,
 						  p->keys[i].color_idle, p->corner_radius);
-				fill_rounded_rect(pixels, width, height, bar_x, y + (p->key_size - fill_h), bar_w,
-						  fill_h, p->keys[i].color_pressed, p->corner_radius);
+				fill_rounded_rect(pixels, width, height, x, bar_y, fill_w, bar_h,
+						  p->keys[i].color_pressed, p->corner_radius);
 			} else {
 				fill_rounded_rect(pixels, width, height, x, y, p->key_size, p->key_size, box_color,
 						  p->corner_radius);
