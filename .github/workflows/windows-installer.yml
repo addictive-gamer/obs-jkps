@@ -43,4 +43,4 @@ jobs:
           OBS_JKPS_VERSION: ${{ steps.meta.outputs.pluginVersion }}
           OBS_JKPS_RELEASE_DIR: ${{ github.workspace }}\release\RelWithDebInfo\${{ steps.meta.outputs.pluginName }}
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "installer\windows\obs-jkps-setup.iss"
+          & & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "installer\windows\obs-jkps-setup.iss"
