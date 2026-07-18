@@ -78,6 +78,23 @@ void jkps_render_measure(const struct jkps_render_params *p, uint32_t *out_width
 	*out_height = (uint32_t)(height + CANVAS_PADDING * 2);
 }
 
+void jkps_render_get_key_positions(const struct jkps_render_params *p, int out_x[], int out_y[])
+{
+	int n = p->num_keys > 0 ? p->num_keys : 0;
+	int trail_y_shift =
+		(p->show_press_trail && !p->vertical_layout) ? JKPS_TRAIL_SEGMENTS * (p->key_size + p->key_spacing) : 0;
+
+	for (int i = 0; i < n; i++) {
+		if (p->vertical_layout) {
+			out_x[i] = CANVAS_PADDING;
+			out_y[i] = CANVAS_PADDING + i * (p->key_size + p->key_spacing);
+		} else {
+			out_x[i] = CANVAS_PADDING + i * (p->key_size + p->key_spacing);
+			out_y[i] = CANVAS_PADDING + trail_y_shift;
+		}
+	}
+}
+
 static void blend_over(uint8_t *dst, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
 	if (a == 0)
@@ -315,10 +332,13 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 		}
 
 		uint32_t box_color = p->keys[i].down ? p->keys[i].color_pressed : p->keys[i].color_idle;
-		fill_rounded_rect(pixels, width, height, x, y, p->key_size, p->key_size, box_color, p->corner_radius);
-		if (p->show_key_labels)
-			draw_text_centered(pixels, width, height, x, y, p->key_size, p->key_size, p->keys[i].label,
-					   p->key_font_size, p->color_text);
+		if (!p->keys[i].has_custom_skin) {
+			fill_rounded_rect(pixels, width, height, x, y, p->key_size, p->key_size, box_color,
+					  p->corner_radius);
+			if (p->show_key_labels)
+				draw_text_centered(pixels, width, height, x, y, p->key_size, p->key_size,
+						   p->keys[i].label, p->key_font_size, p->color_text);
+		}
 	}
 
 	int line_h = stats_line_height(p);

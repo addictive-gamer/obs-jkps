@@ -35,6 +35,8 @@ struct jkps_render_key {
 	float trail[JKPS_TRAIL_SEGMENTS]; /* 0..1 intensity, index 0 = closest to the key box */
 	uint32_t color_idle;
 	uint32_t color_pressed;
+	bool has_custom_skin; /* if true, the box/label are skipped here; the
+				* caller draws its own texture on top instead */
 };
 
 /* Everything the renderer needs to know to draw one frame. All colors are
@@ -67,6 +69,12 @@ struct jkps_render_params {
 
 /* Computes the pixel dimensions the canvas needs for the given params. */
 void jkps_render_measure(const struct jkps_render_params *p, uint32_t *out_width, uint32_t *out_height);
+
+/* Fills out_x/out_y[0..p->num_keys-1] with the same box positions
+ * jkps_render_frame uses internally. Lets the caller draw its own texture
+ * (a custom key skin image) at the exact right spot on top of the base
+ * texture, without duplicating the layout math. */
+void jkps_render_get_key_positions(const struct jkps_render_params *p, int out_x[], int out_y[]);
 
 /* Renders the current state into `pixels`, a caller-allocated buffer of at
  * least width*height*4 bytes (BGRA, straight/non-premultiplied alpha,

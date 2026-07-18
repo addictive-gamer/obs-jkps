@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "jkps-keynames.h"
 
 #include <graphics/graphics.h>
+#include <graphics/image-file.h>
 #include <util/platform.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,6 +55,20 @@ struct jkps_source_context {
 
 	uint32_t key_color_idle[JKPS_MAX_KEYS];
 	uint32_t key_color_pressed[JKPS_MAX_KEYS];
+
+	/* Optional per-key custom skin images. If a key has a loaded idle
+	 * and/or pressed image, the renderer skips drawing the colored box
+	 * for it and jkps_source_video_render draws this texture on top
+	 * instead, at the position cached in key_screen_x/y below. */
+	char key_skin_idle_path[JKPS_MAX_KEYS][512];
+	char key_skin_pressed_path[JKPS_MAX_KEYS][512];
+	gs_image_file_t key_skin_idle_img[JKPS_MAX_KEYS];
+	gs_image_file_t key_skin_pressed_img[JKPS_MAX_KEYS];
+	bool key_skin_idle_loaded[JKPS_MAX_KEYS];
+	bool key_skin_pressed_loaded[JKPS_MAX_KEYS];
+	int key_screen_x[JKPS_MAX_KEYS];
+	int key_screen_y[JKPS_MAX_KEYS];
+
 	uint32_t color_text;
 	uint32_t color_bg;
 
@@ -79,6 +94,36 @@ static const char *jkps_source_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
 	return obs_module_text("JkpsSource.Name");
+}
+
+/* (Re)loads a custom key-skin image only if the path actually changed, so
+ * we don't hit the disk/GPU on every settings tweak (update() fires for
+ * any changed setting, not just skin paths). Passing an empty path frees
+ * whatever was loaded and falls back to the colored box renderer. */
+static void jkps_load_key_skin(gs_image_file_t *img, bool *loaded, char *stored_path, size_t stored_path_size,
+			       const char *new_path)
+{
+	if (strcmp(stored_path, new_path) == 0)
+		return;
+
+	if (*loaded) {
+		obs_enter_graphics();
+		gs_image_file_free(img);
+		obs_leave_graphics();
+		*loaded = false;
+	}
+
+	strncpy(stored_path, new_path, stored_path_size - 1);
+	stored_path[stored_path_size - 1] = '\0';
+
+	if (new_path[0] == '\0')
+		return;
+
+	gs_image_file_init(img, new_path);
+	obs_enter_graphics();
+	gs_image_file_init_texture(img);
+	obs_leave_graphics();
+	*loaded = img->loaded;
 }
 
 static void rebuild_canvas(struct jkps_source_context *ctx)
@@ -175,6 +220,16 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 
 		snprintf(key, sizeof(key), "key_color_pressed_%d", i);
 		ctx->key_color_pressed[i] = (uint32_t)obs_data_get_int(settings, key);
+
+		snprintf(key, sizeof(key), "key_skin_idle_%d", i);
+		jkps_load_key_skin(&ctx->key_skin_idle_img[i], &ctx->key_skin_idle_loaded[i],
+				   ctx->key_skin_idle_path[i], sizeof(ctx->key_skin_idle_path[i]),
+				   obs_data_get_string(settings, key));
+
+		snprintf(key, sizeof(key), "key_skin_pressed_%d", i);
+		jkps_load_key_skin(&ctx->key_skin_pressed_img[i], &ctx->key_skin_pressed_loaded[i],
+				   ctx->key_skin_pressed_path[i], sizeof(ctx->key_skin_pressed_path[i]),
+				   obs_data_get_string(settings, key));
 	}
 
 	ctx->vertical_layout = obs_data_get_bool(settings, "vertical_layout");
@@ -216,6 +271,12 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 
 		snprintf(key, sizeof(key), "key_color_pressed_%d", i);
 		obs_data_set_default_int(settings, key, 0xFF37B2FF);
+
+		snprintf(key, sizeof(key), "key_skin_idle_%d", i);
+		obs_data_set_default_string(settings, key, "");
+
+		snprintf(key, sizeof(key), "key_skin_pressed_%d", i);
+		obs_data_set_default_string(settings, key, "");
 	}
 
 	obs_data_set_default_bool(settings, "vertical_layout", false);
@@ -450,12 +511,15 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
 		char group_name[32], enabled_name[32], vcode_name[32], label_name[32], group_title[64];
 		char color_idle_name[32], color_pressed_name[32];
+		char skin_idle_name[32], skin_pressed_name[32];
 		snprintf(group_name, sizeof(group_name), "key_group_%d", i);
 		snprintf(enabled_name, sizeof(enabled_name), "key_enabled_%d", i);
 		snprintf(vcode_name, sizeof(vcode_name), "key_vcode_%d", i);
 		snprintf(label_name, sizeof(label_name), "key_label_%d", i);
 		snprintf(color_idle_name, sizeof(color_idle_name), "key_color_idle_%d", i);
 		snprintf(color_pressed_name, sizeof(color_pressed_name), "key_color_pressed_%d", i);
+		snprintf(skin_idle_name, sizeof(skin_idle_name), "key_skin_idle_%d", i);
+		snprintf(skin_pressed_name, sizeof(skin_pressed_name), "key_skin_pressed_%d", i);
 		snprintf(group_title, sizeof(group_title), "%s %d", obs_module_text("JkpsSource.Key"), i + 1);
 
 		obs_properties_t *group = obs_properties_create();
@@ -469,6 +533,10 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 		obs_properties_add_text(group, label_name, obs_module_text("JkpsSource.KeyLabel"), OBS_TEXT_DEFAULT);
 		obs_properties_add_color(group, color_idle_name, obs_module_text("JkpsSource.ColorIdle"));
 		obs_properties_add_color(group, color_pressed_name, obs_module_text("JkpsSource.ColorPressed"));
+		obs_properties_add_path(group, skin_idle_name, obs_module_text("JkpsSource.SkinIdleImage"),
+					OBS_PATH_FILE, "Images (*.png *.jpg *.jpeg *.bmp *.gif)", NULL);
+		obs_properties_add_path(group, skin_pressed_name, obs_module_text("JkpsSource.SkinPressedImage"),
+					OBS_PATH_FILE, "Images (*.png *.jpg *.jpeg *.bmp *.gif)", NULL);
 
 		obs_properties_add_group(props, group_name, group_title, OBS_GROUP_NORMAL, group);
 	}
@@ -520,6 +588,12 @@ static void jkps_source_destroy(void *data)
 	obs_enter_graphics();
 	if (ctx->texture)
 		gs_texture_destroy(ctx->texture);
+	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
+		if (ctx->key_skin_idle_loaded[i])
+			gs_image_file_free(&ctx->key_skin_idle_img[i]);
+		if (ctx->key_skin_pressed_loaded[i])
+			gs_image_file_free(&ctx->key_skin_pressed_img[i]);
+	}
 	obs_leave_graphics();
 
 	free(ctx->pixel_buffer);
@@ -555,6 +629,7 @@ static void jkps_source_video_tick(void *data, float seconds)
 	memset(&p, 0, sizeof(p));
 
 	int active = 0;
+	int slot_to_key[JKPS_MAX_KEYS];
 	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
 		if (!ctx->key_enabled[i])
 			continue;
@@ -563,7 +638,9 @@ static void jkps_source_video_tick(void *data, float seconds)
 		p.keys[active].total = ctx->keys[i].total_presses;
 		p.keys[active].color_idle = ctx->key_color_idle[i];
 		p.keys[active].color_pressed = ctx->key_color_pressed[i];
+		p.keys[active].has_custom_skin = ctx->key_skin_idle_loaded[i] || ctx->key_skin_pressed_loaded[i];
 		memcpy(p.keys[active].trail, ctx->trail[i], sizeof(p.keys[active].trail));
+		slot_to_key[active] = i;
 		active++;
 	}
 	p.num_keys = active > 0 ? active : 1;
@@ -589,6 +666,14 @@ static void jkps_source_video_tick(void *data, float seconds)
 	p.total_presses = ctx->stats.total_presses;
 	p.bpm = ctx->stats.bpm;
 
+	int slot_x[JKPS_MAX_KEYS], slot_y[JKPS_MAX_KEYS];
+	jkps_render_get_key_positions(&p, slot_x, slot_y);
+	for (int s = 0; s < active; s++) {
+		int orig = slot_to_key[s];
+		ctx->key_screen_x[orig] = slot_x[s];
+		ctx->key_screen_y[orig] = slot_y[s];
+	}
+
 	if (jkps_render_frame(&p, ctx->width, ctx->height, ctx->pixel_buffer)) {
 		obs_enter_graphics();
 		gs_texture_set_image(ctx->texture, ctx->pixel_buffer, ctx->width * 4, false);
@@ -604,6 +689,24 @@ static void jkps_source_video_render(void *data, gs_effect_t *effect)
 		return;
 
 	obs_source_draw(ctx->texture, 0, 0, 0, 0, false);
+
+	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
+		if (!ctx->key_enabled[i])
+			continue;
+
+		bool down = ctx->keys[i].down;
+		gs_image_file_t *img = NULL;
+		if (down && ctx->key_skin_pressed_loaded[i])
+			img = &ctx->key_skin_pressed_img[i];
+		else if (ctx->key_skin_idle_loaded[i])
+			img = &ctx->key_skin_idle_img[i];
+		else if (ctx->key_skin_pressed_loaded[i])
+			img = &ctx->key_skin_pressed_img[i]; /* only a pressed image was given */
+
+		if (img && img->texture)
+			obs_source_draw(img->texture, ctx->key_screen_x[i], ctx->key_screen_y[i],
+					(uint32_t)ctx->key_size, (uint32_t)ctx->key_size, false);
+	}
 }
 
 static uint32_t jkps_source_get_width(void *data)
