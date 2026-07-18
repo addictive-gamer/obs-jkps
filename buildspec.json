@@ -38,7 +38,7 @@
     },
     "name": "obs-jkps",
     "displayName": "JKPS - Keys Per Second",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "author": "addictive-gamer",
     "website": "https://github.com/addictive-gamer/obs-jkps",
     "email": "contact@example.com"
