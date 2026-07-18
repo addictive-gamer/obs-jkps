@@ -110,8 +110,7 @@ begin
       'los archivos del plugin en su carpeta de instalación.', mbError, MB_OK);
     Result := False;
   end else begin
-    MsgBox('Se instalará el plugin JKPS - Teclas por segundo en la siguiente instalación de OBS Studio detectada:' +
-      #13#10 + #13#10 + OBSPath, mbInformation, MB_OK);
+    MsgBox('Se instalará el plugin JKPS - Teclas por segundo en la siguiente instalación de OBS Studio detectada:' + #13#10 + #13#10 + OBSPath, mbInformation, MB_OK);
     Result := True;
   end;
 end;
