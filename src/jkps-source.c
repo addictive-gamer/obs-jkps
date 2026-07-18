@@ -46,6 +46,9 @@ struct jkps_source_context {
 	int key_size;
 	int key_spacing;
 	int key_font_size;
+	int corner_radius;
+	bool show_press_trail;
+	float trail[JKPS_MAX_KEYS][JKPS_TRAIL_SEGMENTS];
 
 	uint32_t color_idle;
 	uint32_t color_pressed;
@@ -168,6 +171,8 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 	ctx->key_size = (int)obs_data_get_int(settings, "key_size");
 	ctx->key_spacing = (int)obs_data_get_int(settings, "key_spacing");
 	ctx->key_font_size = (int)obs_data_get_int(settings, "key_font_size");
+	ctx->corner_radius = (int)obs_data_get_int(settings, "corner_radius");
+	ctx->show_press_trail = obs_data_get_bool(settings, "show_press_trail");
 
 	ctx->color_idle = (uint32_t)obs_data_get_int(settings, "color_idle");
 	ctx->color_pressed = (uint32_t)obs_data_get_int(settings, "color_pressed");
@@ -201,6 +206,8 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "key_size", 60);
 	obs_data_set_default_int(settings, "key_spacing", 8);
 	obs_data_set_default_int(settings, "key_font_size", 22);
+	obs_data_set_default_int(settings, "corner_radius", 0);
+	obs_data_set_default_bool(settings, "show_press_trail", false);
 
 	obs_data_set_default_int(settings, "color_idle", 0xFF3A3A3A);
 	obs_data_set_default_int(settings, "color_pressed", 0xFF37B2FF);
@@ -214,10 +221,118 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "stats_color", 0xFFFFFFFF);
 }
 
+/* Quick-apply theme presets: each bundles key/text/background colors with a
+ * corner style, so one click gives a coherent look instead of the user
+ * having to tweak 5 separate color pickers + a radius slider by hand. */
+struct jkps_theme {
+	const char *id;         /* used as the button's property name */
+	const char *locale_key; /* obs_module_text() key for the button label */
+	uint32_t color_idle;
+	uint32_t color_pressed;
+	uint32_t color_text;
+	uint32_t color_bg;
+	uint32_t stats_color;
+	int corner_radius;
+};
+
+static const struct jkps_theme jkps_themes[] = {
+	{
+		.id = "theme_classic",
+		.locale_key = "JkpsSource.ThemeClassic",
+		.color_idle = 0xFF3A3A3A,
+		.color_pressed = 0xFF37B2FF,
+		.color_text = 0xFFFFFFFF,
+		.color_bg = 0x00000000,
+		.stats_color = 0xFFFFFFFF,
+		.corner_radius = 6,
+	},
+	{
+		.id = "theme_neon",
+		.locale_key = "JkpsSource.ThemeNeon",
+		.color_idle = 0xFF2E1A3D,
+		.color_pressed = 0xFFFF2BD6,
+		.color_text = 0xFF00F5FF,
+		.color_bg = 0x00000000,
+		.stats_color = 0xFF00F5FF,
+		.corner_radius = 30, /* pill-shaped at the default 60px key size */
+	},
+	{
+		.id = "theme_retro",
+		.locale_key = "JkpsSource.ThemeRetroArcade",
+		.color_idle = 0xFF7C2D2D,
+		.color_pressed = 0xFF00D400,
+		.color_text = 0xFF000000,
+		.color_bg = 0xFF0A0A0A,
+		.stats_color = 0xFF00FF00,
+		.corner_radius = 0, /* crisp, blocky pixel-art corners */
+	},
+	{
+		.id = "theme_minimal",
+		.locale_key = "JkpsSource.ThemeMinimal",
+		.color_idle = 0xFFE5E5E5,
+		.color_pressed = 0xFF3A3A3A,
+		.color_text = 0xFF222222,
+		.color_bg = 0x00000000,
+		.stats_color = 0xFF222222,
+		.corner_radius = 2,
+	},
+	{
+		.id = "theme_pastel",
+		.locale_key = "JkpsSource.ThemePastel",
+		.color_idle = 0xFFF7D6E8,
+		.color_pressed = 0xFFC9F7DE,
+		.color_text = 0xFF6B4E6E,
+		.color_bg = 0x00000000,
+		.stats_color = 0xFF6B4E6E,
+		.corner_radius = 16,
+	},
+};
+#define JKPS_THEME_COUNT (sizeof(jkps_themes) / sizeof(jkps_themes[0]))
+
+static bool jkps_apply_theme(struct jkps_source_context *ctx, const struct jkps_theme *theme)
+{
+	obs_data_t *settings = obs_source_get_settings(ctx->source);
+
+	obs_data_set_int(settings, "color_idle", theme->color_idle);
+	obs_data_set_int(settings, "color_pressed", theme->color_pressed);
+	obs_data_set_int(settings, "color_text", theme->color_text);
+	obs_data_set_int(settings, "color_bg", theme->color_bg);
+	obs_data_set_int(settings, "stats_color", theme->stats_color);
+	obs_data_set_int(settings, "corner_radius", theme->corner_radius);
+
+	obs_source_update(ctx->source, settings);
+	obs_data_release(settings);
+
+	/* Return true so the properties dialog re-reads and displays the new
+	 * values (color pickers, slider) instead of showing stale ones. */
+	return true;
+}
+
+static bool jkps_theme_button_clicked(obs_properties_t *props, obs_property_t *property, void *data)
+{
+	UNUSED_PARAMETER(props);
+	struct jkps_source_context *ctx = data;
+	const char *name = obs_property_name(property);
+
+	for (size_t i = 0; i < JKPS_THEME_COUNT; i++) {
+		if (strcmp(name, jkps_themes[i].id) == 0)
+			return jkps_apply_theme(ctx, &jkps_themes[i]);
+	}
+	return false;
+}
+
 static obs_properties_t *jkps_source_get_properties(void *data)
 {
 	struct jkps_source_context *ctx = data;
 	obs_properties_t *props = obs_properties_create();
+
+	obs_properties_t *themes_group = obs_properties_create();
+	for (size_t i = 0; i < JKPS_THEME_COUNT; i++) {
+		obs_properties_add_button(themes_group, jkps_themes[i].id, obs_module_text(jkps_themes[i].locale_key),
+					  jkps_theme_button_clicked);
+	}
+	obs_properties_add_group(props, "themes_group", obs_module_text("JkpsSource.Themes"), OBS_GROUP_NORMAL,
+				 themes_group);
 
 	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
 		char group_name[32], enabled_name[32], vcode_name[32], label_name[32], group_title[64];
@@ -244,6 +359,8 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_properties_add_int(props, "key_size", obs_module_text("JkpsSource.KeySize"), 20, 300, 1);
 	obs_properties_add_int(props, "key_spacing", obs_module_text("JkpsSource.KeySpacing"), 0, 100, 1);
 	obs_properties_add_int(props, "key_font_size", obs_module_text("JkpsSource.KeyFontSize"), 8, 150, 1);
+	obs_properties_add_int(props, "corner_radius", obs_module_text("JkpsSource.CornerRadius"), 0, 150, 1);
+	obs_properties_add_bool(props, "show_press_trail", obs_module_text("JkpsSource.ShowPressTrail"));
 
 	obs_properties_add_color(props, "color_idle", obs_module_text("JkpsSource.ColorIdle"));
 	obs_properties_add_color(props, "color_pressed", obs_module_text("JkpsSource.ColorPressed"));
@@ -305,6 +422,17 @@ static void jkps_source_video_tick(void *data, float seconds)
 		return;
 	ctx->last_texture_update_ms = now_ms;
 
+	/* Shift each key's trail buffer outward one slot (like a conveyor
+	 * belt) and inject the current down state at the front. Segment 0
+	 * fades out gradually when the key is up, so a quick tap still
+	 * leaves a brief, natural-looking blip instead of vanishing on the
+	 * very next frame. */
+	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
+		for (int s = JKPS_TRAIL_SEGMENTS - 1; s > 0; s--)
+			ctx->trail[i][s] = ctx->trail[i][s - 1];
+		ctx->trail[i][0] = ctx->keys[i].down ? 1.0f : ctx->trail[i][0] * 0.55f;
+	}
+
 	struct jkps_render_params p;
 	memset(&p, 0, sizeof(p));
 
@@ -315,6 +443,7 @@ static void jkps_source_video_tick(void *data, float seconds)
 		p.keys[active].label = ctx->key_label[i];
 		p.keys[active].down = ctx->keys[i].down;
 		p.keys[active].total = ctx->keys[i].total_presses;
+		memcpy(p.keys[active].trail, ctx->trail[i], sizeof(p.keys[active].trail));
 		active++;
 	}
 	p.num_keys = active > 0 ? active : 1;
@@ -325,6 +454,8 @@ static void jkps_source_video_tick(void *data, float seconds)
 	p.key_size = ctx->key_size;
 	p.key_spacing = ctx->key_spacing;
 	p.key_font_size = ctx->key_font_size;
+	p.corner_radius = ctx->corner_radius;
+	p.show_press_trail = ctx->show_press_trail;
 	p.color_idle = ctx->color_idle;
 	p.color_pressed = ctx->color_pressed;
 	p.color_text = ctx->color_text;

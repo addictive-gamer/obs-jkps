@@ -26,10 +26,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 extern "C" {
 #endif
 
+#define JKPS_TRAIL_SEGMENTS 6
+
 struct jkps_render_key {
 	const char *label;
 	bool down;
 	uint64_t total;
+	float trail[JKPS_TRAIL_SEGMENTS]; /* 0..1 intensity, index 0 = closest to the key box */
 };
 
 /* Everything the renderer needs to know to draw one frame. All colors are
@@ -42,6 +45,8 @@ struct jkps_render_params {
 	int key_size;
 	int key_spacing;
 	int key_font_size;
+	int corner_radius; /* 0 = square corners; up to key_size/2 for a pill/circle look */
+	bool show_press_trail;
 
 	uint32_t color_idle;
 	uint32_t color_pressed;
