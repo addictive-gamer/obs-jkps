@@ -27,6 +27,7 @@ extern "C" {
 #endif
 
 #define JKPS_TRAIL_SEGMENTS 10
+#define JKPS_KPS_GRAPH_SAMPLES 60
 
 struct jkps_render_key {
 	const char *label;
@@ -53,6 +54,11 @@ struct jkps_render_params {
 	bool show_press_trail;
 	bool show_key_labels;
 	uint32_t trail_color;
+	bool bars_mode; /* draw thin equalizer-style bars instead of square boxes */
+
+	bool show_kps_graph;
+	uint32_t kps_graph_color;
+	float kps_history[JKPS_KPS_GRAPH_SAMPLES]; /* oldest first, newest last */
 
 	uint32_t color_text;
 	uint32_t color_bg;

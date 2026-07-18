@@ -24,6 +24,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #define STATS_PADDING 10
 #define CANVAS_PADDING 4
+#define KPS_GRAPH_HEIGHT 50
+#define KPS_GRAPH_MARGIN 8
 
 static int stats_line_height(const struct jkps_render_params *p)
 {
@@ -71,7 +73,8 @@ void jkps_render_measure(const struct jkps_render_params *p, uint32_t *out_width
 
 	int width = keys_w > stats_w ? keys_w : stats_w;
 	width += trail_w;
-	int height = keys_h + stats_line_height(p);
+	int graph_h = p->show_kps_graph ? (KPS_GRAPH_HEIGHT + KPS_GRAPH_MARGIN) : 0;
+	int height = keys_h + stats_line_height(p) + graph_h;
 	height += trail_h;
 
 	*out_width = (uint32_t)(width + CANVAS_PADDING * 2);
@@ -333,8 +336,35 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 
 		uint32_t box_color = p->keys[i].down ? p->keys[i].color_pressed : p->keys[i].color_idle;
 		if (!p->keys[i].has_custom_skin) {
-			fill_rounded_rect(pixels, width, height, x, y, p->key_size, p->key_size, box_color,
-					  p->corner_radius);
+			if (p->bars_mode) {
+				/* trail[0] is always maintained (decays on release,
+				 * jumps to 1.0 on press) regardless of whether the
+				 * multi-segment trail visual is enabled, so it
+				 * doubles nicely as a VU-meter-style fill level. */
+				float fill_frac = p->keys[i].trail[0];
+				if (fill_frac < 0.06f)
+					fill_frac = p->keys[i].down ? 1.0f : 0.06f;
+				if (fill_frac > 1.0f)
+					fill_frac = 1.0f;
+
+				int bar_w = (p->key_size * 6) / 10;
+				if (bar_w < 4)
+					bar_w = 4;
+				int bar_x = x + (p->key_size - bar_w) / 2;
+				int fill_h = (int)(p->key_size * fill_frac);
+				if (fill_h < 2)
+					fill_h = 2;
+
+				/* Dim background track, then the active fill anchored
+				 * to the bottom so it reads like a level meter. */
+				fill_rounded_rect(pixels, width, height, bar_x, y, bar_w, p->key_size,
+						  p->keys[i].color_idle, p->corner_radius);
+				fill_rounded_rect(pixels, width, height, bar_x, y + (p->key_size - fill_h), bar_w,
+						  fill_h, p->keys[i].color_pressed, p->corner_radius);
+			} else {
+				fill_rounded_rect(pixels, width, height, x, y, p->key_size, p->key_size, box_color,
+						  p->corner_radius);
+			}
 			if (p->show_key_labels)
 				draw_text_centered(pixels, width, height, x, y, p->key_size, p->key_size,
 						   p->keys[i].label, p->key_font_size, p->color_text);
@@ -342,6 +372,36 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 	}
 
 	int line_h = stats_line_height(p);
+
+	if (p->show_kps_graph) {
+		int graph_bottom = (int)height - CANVAS_PADDING - line_h;
+		int graph_top = graph_bottom - KPS_GRAPH_HEIGHT;
+		int graph_x0 = CANVAS_PADDING;
+		int graph_w = (int)width - CANVAS_PADDING * 2;
+
+		/* Faint background track so the graph area reads even at 0 KPS. */
+		fill_rect(pixels, width, height, graph_x0, graph_top, graph_w, KPS_GRAPH_HEIGHT,
+			  (p->kps_graph_color & 0x00FFFFFFu) | 0x20000000u);
+
+		float max_val = 1.0f;
+		for (int j = 0; j < JKPS_KPS_GRAPH_SAMPLES; j++)
+			if (p->kps_history[j] > max_val)
+				max_val = p->kps_history[j];
+
+		int bar_w = graph_w / JKPS_KPS_GRAPH_SAMPLES;
+		if (bar_w < 1)
+			bar_w = 1;
+
+		for (int j = 0; j < JKPS_KPS_GRAPH_SAMPLES; j++) {
+			int bar_h = (int)((p->kps_history[j] / max_val) * KPS_GRAPH_HEIGHT);
+			if (bar_h < 1)
+				bar_h = 1;
+			int bx = graph_x0 + j * bar_w;
+			int by = graph_bottom - bar_h;
+			fill_rect(pixels, width, height, bx, by, bar_w > 1 ? bar_w - 1 : 1, bar_h, p->kps_graph_color);
+		}
+	}
+
 	if (line_h > 0) {
 		char buf[160];
 		buf[0] = '\0';

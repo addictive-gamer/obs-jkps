@@ -51,6 +51,10 @@ struct jkps_source_context {
 	bool show_press_trail;
 	bool show_key_labels;
 	uint32_t trail_color;
+	bool bars_mode;
+	bool show_kps_graph;
+	uint32_t kps_graph_color;
+	float kps_history[JKPS_KPS_GRAPH_SAMPLES];
 	float trail[JKPS_MAX_KEYS][JKPS_TRAIL_SEGMENTS];
 
 	uint32_t key_color_idle[JKPS_MAX_KEYS];
@@ -148,6 +152,7 @@ static void rebuild_canvas(struct jkps_source_context *ctx)
 	p.key_font_size = ctx->key_font_size;
 	p.corner_radius = ctx->corner_radius;
 	p.show_press_trail = ctx->show_press_trail;
+	p.show_kps_graph = ctx->show_kps_graph;
 	p.show_kps = ctx->show_kps;
 	p.show_total = ctx->show_total;
 	p.show_bpm = ctx->show_bpm;
@@ -240,6 +245,9 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 	ctx->show_press_trail = obs_data_get_bool(settings, "show_press_trail");
 	ctx->show_key_labels = obs_data_get_bool(settings, "show_key_labels");
 	ctx->trail_color = (uint32_t)obs_data_get_int(settings, "trail_color");
+	ctx->bars_mode = obs_data_get_bool(settings, "bars_mode");
+	ctx->show_kps_graph = obs_data_get_bool(settings, "show_kps_graph");
+	ctx->kps_graph_color = (uint32_t)obs_data_get_int(settings, "kps_graph_color");
 
 	ctx->color_text = (uint32_t)obs_data_get_int(settings, "color_text");
 	ctx->color_bg = (uint32_t)obs_data_get_int(settings, "color_bg");
@@ -287,6 +295,9 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, "show_press_trail", false);
 	obs_data_set_default_bool(settings, "show_key_labels", true);
 	obs_data_set_default_int(settings, "trail_color", 0xFFFFFFFF);
+	obs_data_set_default_bool(settings, "bars_mode", false);
+	obs_data_set_default_bool(settings, "show_kps_graph", false);
+	obs_data_set_default_int(settings, "kps_graph_color", 0xFF37B2FF);
 
 	obs_data_set_default_int(settings, "color_text", 0xFFFFFFFF);
 	obs_data_set_default_int(settings, "color_bg", 0x00000000);
@@ -320,6 +331,7 @@ struct jkps_theme {
 	uint32_t stats_color;
 	uint32_t trail_color;
 	int corner_radius;
+	bool bars_mode;
 };
 
 static const uint32_t jkps_pal_classic_idle[] = {0xFF3A3A3A};
@@ -352,6 +364,11 @@ static const uint32_t jkps_pal_ddr_pressed[] = {0xFF33B0FF, 0xFF33D4FF, 0xFF4DDB
  * cyan, green, red), left-to-right matching the default D F J K layout. */
 static const uint32_t jkps_pal_fnf_idle[] = {0xFF6E2E5C, 0xFF2E6E6E, 0xFF2E6E31, 0xFF6E2E30};
 static const uint32_t jkps_pal_fnf_pressed[] = {0xFFD680E0, 0xFFFFE666, 0xFF60FF6B, 0xFF7F7AFF};
+
+/* Bars: a dim track color plus a bright accent fill, meant to be paired
+ * with bars_mode's VU-meter-style rendering. */
+static const uint32_t jkps_pal_bars_idle[] = {0xFF2A2A2A};
+static const uint32_t jkps_pal_bars_pressed[] = {0xFF37B2FF};
 
 static const struct jkps_theme jkps_themes[] = {
 	{
@@ -450,6 +467,19 @@ static const struct jkps_theme jkps_themes[] = {
 		.trail_color = 0xFFFFFFFF,
 		.corner_radius = 10,
 	},
+	{
+		.id = "theme_bars",
+		.locale_key = "JkpsSource.ThemeBars",
+		.key_idle = jkps_pal_bars_idle,
+		.key_pressed = jkps_pal_bars_pressed,
+		.key_color_count = 1,
+		.color_text = 0xFFFFFFFF,
+		.color_bg = 0x00000000,
+		.stats_color = 0xFF37B2FF,
+		.trail_color = 0xFF37B2FF,
+		.corner_radius = 3,
+		.bars_mode = true,
+	},
 };
 #define JKPS_THEME_COUNT (sizeof(jkps_themes) / sizeof(jkps_themes[0]))
 
@@ -473,6 +503,7 @@ static bool jkps_apply_theme(struct jkps_source_context *ctx, const struct jkps_
 	obs_data_set_int(settings, "stats_color", theme->stats_color);
 	obs_data_set_int(settings, "trail_color", theme->trail_color);
 	obs_data_set_int(settings, "corner_radius", theme->corner_radius);
+	obs_data_set_bool(settings, "bars_mode", theme->bars_mode);
 
 	obs_source_update(ctx->source, settings);
 	obs_data_release(settings);
@@ -549,6 +580,9 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_properties_add_bool(props, "show_press_trail", obs_module_text("JkpsSource.ShowPressTrail"));
 	obs_properties_add_bool(props, "show_key_labels", obs_module_text("JkpsSource.ShowKeyLabels"));
 	obs_properties_add_color_alpha(props, "trail_color", obs_module_text("JkpsSource.TrailColor"));
+	obs_properties_add_bool(props, "bars_mode", obs_module_text("JkpsSource.BarsMode"));
+	obs_properties_add_bool(props, "show_kps_graph", obs_module_text("JkpsSource.ShowKpsGraph"));
+	obs_properties_add_color_alpha(props, "kps_graph_color", obs_module_text("JkpsSource.KpsGraphColor"));
 
 	obs_properties_add_color(props, "color_text", obs_module_text("JkpsSource.ColorText"));
 	obs_properties_add_color_alpha(props, "color_bg", obs_module_text("JkpsSource.ColorBg"));
@@ -625,6 +659,11 @@ static void jkps_source_video_tick(void *data, float seconds)
 		ctx->trail[i][0] = ctx->keys[i].down ? 1.0f : ctx->trail[i][0] * 0.55f;
 	}
 
+	/* Scroll the KPS graph history: drop the oldest sample, append the
+	 * current KPS at the end. */
+	memmove(&ctx->kps_history[0], &ctx->kps_history[1], sizeof(float) * (JKPS_KPS_GRAPH_SAMPLES - 1));
+	ctx->kps_history[JKPS_KPS_GRAPH_SAMPLES - 1] = ctx->stats.kps;
+
 	struct jkps_render_params p;
 	memset(&p, 0, sizeof(p));
 
@@ -655,6 +694,10 @@ static void jkps_source_video_tick(void *data, float seconds)
 	p.show_press_trail = ctx->show_press_trail;
 	p.show_key_labels = ctx->show_key_labels;
 	p.trail_color = ctx->trail_color;
+	p.bars_mode = ctx->bars_mode;
+	p.show_kps_graph = ctx->show_kps_graph;
+	p.kps_graph_color = ctx->kps_graph_color;
+	memcpy(p.kps_history, ctx->kps_history, sizeof(p.kps_history));
 	p.color_text = ctx->color_text;
 	p.color_bg = ctx->color_bg;
 	p.show_kps = ctx->show_kps;
