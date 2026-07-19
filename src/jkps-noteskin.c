@@ -353,11 +353,26 @@ static void jkps_noteskin_collect(const char *dir_path, const char *label_hint,
 		if (local_pairs > 1) {
 			char base[JKPS_NOTESKIN_NAME_LEN];
 			basename_noext_into(ent->d_name, base, sizeof(base));
-			if (label_hint && label_hint[0])
-				snprintf(out->display_name, sizeof(out->display_name), "%s - %s", label_hint, base);
-			else
-				strncpy(out->display_name, base, sizeof(out->display_name) - 1),
-					out->display_name[sizeof(out->display_name) - 1] = '\0';
+			if (label_hint && label_hint[0]) {
+				/* Clamp both halves to a size that provably
+				 * fits "%s - %s" inside display_name, so the
+				 * compiler can see the combined write can
+				 * never truncate (even though a truncated
+				 * label is harmless either way). */
+				char label_buf[60];
+				strncpy(label_buf, label_hint, sizeof(label_buf) - 1);
+				label_buf[sizeof(label_buf) - 1] = '\0';
+
+				char base_buf[60];
+				strncpy(base_buf, base, sizeof(base_buf) - 1);
+				base_buf[sizeof(base_buf) - 1] = '\0';
+
+				snprintf(out->display_name, sizeof(out->display_name), "%s - %s", label_buf,
+					 base_buf);
+			} else {
+				strncpy(out->display_name, base, sizeof(out->display_name) - 1);
+				out->display_name[sizeof(out->display_name) - 1] = '\0';
+			}
 		} else if (label_hint && label_hint[0]) {
 			strncpy(out->display_name, label_hint, sizeof(out->display_name) - 1);
 			out->display_name[sizeof(out->display_name) - 1] = '\0';
