@@ -56,8 +56,7 @@ enum jkps_skin_category {
  * plugin's first 4 key slots, left to right - matches the jkps_pal_fnf_*
  * palettes above and is fixed regardless of which physical keys the user
  * has slots 0-3 bound to. */
-static const enum jkps_noteskin_dir jkps_slot_to_dir[4] = {JKPS_DIR_LEFT, JKPS_DIR_DOWN, JKPS_DIR_UP,
-							     JKPS_DIR_RIGHT};
+static const enum jkps_noteskin_dir jkps_slot_to_dir[4] = {JKPS_DIR_LEFT, JKPS_DIR_DOWN, JKPS_DIR_UP, JKPS_DIR_RIGHT};
 
 struct jkps_source_context {
 	obs_source_t *source;
@@ -173,7 +172,7 @@ static void jkps_load_key_skin(gs_image_file_t *img, bool *loaded, char *stored_
  * actually changed" behavior, but for a whole atlas pack instead of a
  * single flat image. */
 static void jkps_load_noteskin(struct jkps_noteskin *ns, bool *loaded, char *stored_path, size_t stored_path_size,
-				const char *new_path)
+			       const char *new_path)
 {
 	if (strcmp(stored_path, new_path) == 0)
 		return;
@@ -317,8 +316,8 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 
 	ctx->custom_skins_enabled = obs_data_get_bool(settings, "custom_skins_enabled");
 	ctx->skin_category = ctx->custom_skins_enabled
-				      ? (enum jkps_skin_category)obs_data_get_int(settings, "skin_category")
-				      : JKPS_SKIN_CAT_NATIVE;
+				     ? (enum jkps_skin_category)obs_data_get_int(settings, "skin_category")
+				     : JKPS_SKIN_CAT_NATIVE;
 
 	jkps_load_noteskin(&ctx->funkin_noteskin, &ctx->funkin_noteskin_loaded, ctx->funkin_skin_xml,
 			   sizeof(ctx->funkin_skin_xml), obs_data_get_string(settings, "funkin_skin_xml"));
@@ -724,7 +723,7 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_properties_t *skins_group = obs_properties_create();
 
 	obs_property_t *enabled_prop = obs_properties_add_bool(skins_group, "custom_skins_enabled",
-								 obs_module_text("JkpsSource.CustomSkinsEnabled"));
+							       obs_module_text("JkpsSource.CustomSkinsEnabled"));
 	obs_property_set_long_description(enabled_prop, obs_module_text("JkpsSource.CustomSkinsEnabledDesc"));
 	obs_property_set_modified_callback(enabled_prop, jkps_skin_controls_modified);
 
@@ -732,33 +731,32 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 				OBS_TEXT_INFO);
 
 	obs_property_t *cat_prop = obs_properties_add_list(skins_group, "skin_category",
-							    obs_module_text("JkpsSource.SkinCategory"),
-							    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+							   obs_module_text("JkpsSource.SkinCategory"),
+							   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(cat_prop, obs_module_text("JkpsSource.SkinCategoryNative"), JKPS_SKIN_CAT_NATIVE);
 	obs_property_list_add_int(cat_prop, obs_module_text("JkpsSource.SkinCategoryFunkin"), JKPS_SKIN_CAT_FUNKIN);
 	obs_property_list_add_int(cat_prop, obs_module_text("JkpsSource.SkinCategoryLocal"), JKPS_SKIN_CAT_LOCAL);
 	obs_property_set_modified_callback(cat_prop, jkps_skin_controls_modified);
 
-	obs_property_t *funkin_folder_prop =
-		obs_properties_add_path(skins_group, "funkin_folder", obs_module_text("JkpsSource.FunkinFolder"),
-					OBS_PATH_DIRECTORY, NULL, NULL);
+	obs_property_t *funkin_folder_prop = obs_properties_add_path(skins_group, "funkin_folder",
+								     obs_module_text("JkpsSource.FunkinFolder"),
+								     OBS_PATH_DIRECTORY, NULL, NULL);
 	obs_property_set_long_description(funkin_folder_prop, obs_module_text("JkpsSource.NoteskinsInfo"));
 	obs_property_set_modified_callback(funkin_folder_prop, jkps_funkin_folder_modified);
 
-	obs_property_t *funkin_skin_prop =
-		obs_properties_add_list(skins_group, "funkin_skin_xml", obs_module_text("JkpsSource.FunkinSkin"),
-					OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_t *funkin_skin_prop = obs_properties_add_list(skins_group, "funkin_skin_xml",
+								   obs_module_text("JkpsSource.FunkinSkin"),
+								   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	jkps_populate_skin_list(funkin_skin_prop, ctx ? ctx->funkin_folder : NULL);
 
-	obs_property_t *local_folder_prop =
-		obs_properties_add_path(skins_group, "local_folder", obs_module_text("JkpsSource.LocalFolder"),
-					OBS_PATH_DIRECTORY, NULL, NULL);
+	obs_property_t *local_folder_prop = obs_properties_add_path(
+		skins_group, "local_folder", obs_module_text("JkpsSource.LocalFolder"), OBS_PATH_DIRECTORY, NULL, NULL);
 	obs_property_set_long_description(local_folder_prop, obs_module_text("JkpsSource.NoteskinsInfo"));
 	obs_property_set_modified_callback(local_folder_prop, jkps_local_folder_modified);
 
-	obs_property_t *local_skin_prop =
-		obs_properties_add_list(skins_group, "local_skin_xml", obs_module_text("JkpsSource.LocalSkin"),
-					OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_t *local_skin_prop = obs_properties_add_list(skins_group, "local_skin_xml",
+								  obs_module_text("JkpsSource.LocalSkin"),
+								  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	jkps_populate_skin_list(local_skin_prop, ctx ? ctx->local_folder : NULL);
 
 	obs_properties_add_group(props, "skins_group", obs_module_text("JkpsSource.NoteskinsGroup"), OBS_GROUP_NORMAL,
@@ -909,7 +907,7 @@ static void jkps_source_video_tick(void *data, float seconds)
 		p.keys[active].color_idle = ctx->key_color_idle[i];
 		p.keys[active].color_pressed = ctx->key_color_pressed[i];
 		p.keys[active].has_custom_skin = ctx->key_skin_idle_loaded[i] || ctx->key_skin_pressed_loaded[i] ||
-						  (active_skin != NULL && i < 4);
+						 (active_skin != NULL && i < 4);
 		memcpy(p.keys[active].trail, ctx->trail[i], sizeof(p.keys[active].trail));
 		slot_to_key[active] = i;
 		active++;
@@ -961,7 +959,7 @@ static void jkps_source_video_tick(void *data, float seconds)
  * big sheet) need this instead. Draws the `src` pixel rect of `tex` scaled
  * to fill a dst_w x dst_h box at (dst_x, dst_y). */
 static void jkps_draw_atlas_subregion(gs_texture_t *tex, int dst_x, int dst_y, int dst_w, int dst_h,
-				       const struct jkps_atlas_rect *src)
+				      const struct jkps_atlas_rect *src)
 {
 	if (!tex || !src->valid || dst_w <= 0 || dst_h <= 0 || src->w <= 0 || src->h <= 0)
 		return;

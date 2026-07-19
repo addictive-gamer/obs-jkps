@@ -51,8 +51,8 @@ struct jkps_stats {
 	int ring_count;
 
 	uint64_t total_presses;
-	float kps;      /* presses within the trailing 1000 ms window */
-	float kps_ema;  /* smoothed KPS, used as the basis for the BPM estimate */
+	float kps;     /* presses within the trailing 1000 ms window */
+	float kps_ema; /* smoothed KPS, used as the basis for the BPM estimate */
 	float bpm;
 };
 
