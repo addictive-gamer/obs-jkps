@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "jkps-input.h"
 #include "jkps-render.h"
 #include "jkps-keynames.h"
+#include "jkps-noteskin.h"
 
 #include <graphics/graphics.h>
 #include <graphics/image-file.h>
@@ -35,6 +36,28 @@ static const int default_vk[JKPS_MAX_KEYS] = {'D', 'F', 'J', 'K', 'S', 'L', 'A',
 static const bool default_enabled[JKPS_MAX_KEYS] = {true, true, true, true, false, false, false, false};
 
 #define TEXTURE_UPDATE_INTERVAL_MS 33 /* ~30 Hz refresh for the GDI-rendered texture */
+
+/* Native Skins are the procedural color themes above (jkps_themes) and work
+ * at any key count. Funkin' Skins and Local Skins both load a real
+ * Sparrow/TexturePacker atlas (see jkps-noteskin.h) from a folder the user
+ * points the plugin at; both start out empty since obs-jkps ships with no
+ * fan art of its own. They're kept as two separate slots - "Funkin' Skins"
+ * for the user's main noteskin folder, "Local Skins" as a second, separate
+ * spot for anything extra - purely for the user's own organization; the
+ * loading/rendering logic is identical for both. Atlas noteskins are
+ * inherently 4-directional, so either one locks the layout to 4K. */
+enum jkps_skin_category {
+	JKPS_SKIN_CAT_NATIVE = 0,
+	JKPS_SKIN_CAT_FUNKIN = 1,
+	JKPS_SKIN_CAT_LOCAL = 2,
+};
+
+/* FNF's standard lane order (left, down, up, right) mapped onto the
+ * plugin's first 4 key slots, left to right - matches the jkps_pal_fnf_*
+ * palettes above and is fixed regardless of which physical keys the user
+ * has slots 0-3 bound to. */
+static const enum jkps_noteskin_dir jkps_slot_to_dir[4] = {JKPS_DIR_LEFT, JKPS_DIR_DOWN, JKPS_DIR_UP,
+							     JKPS_DIR_RIGHT};
 
 struct jkps_source_context {
 	obs_source_t *source;
@@ -72,6 +95,22 @@ struct jkps_source_context {
 	bool key_skin_pressed_loaded[JKPS_MAX_KEYS];
 	int key_screen_x[JKPS_MAX_KEYS];
 	int key_screen_y[JKPS_MAX_KEYS];
+
+	/* Atlas-format noteskins (Funkin' Skins / Local Skins). Only one can
+	 * be active at a time, selected by skin_category; both are loaded
+	 * independently so switching between them doesn't require a reload. */
+	bool custom_skins_enabled;
+	enum jkps_skin_category skin_category;
+
+	char funkin_folder[512];
+	char funkin_skin_xml[512];
+	struct jkps_noteskin funkin_noteskin;
+	bool funkin_noteskin_loaded;
+
+	char local_folder[512];
+	char local_skin_xml[512];
+	struct jkps_noteskin local_noteskin;
+	bool local_noteskin_loaded;
 
 	uint32_t color_text;
 	uint32_t color_bg;
@@ -128,6 +167,45 @@ static void jkps_load_key_skin(gs_image_file_t *img, bool *loaded, char *stored_
 	gs_image_file_init_texture(img);
 	obs_leave_graphics();
 	*loaded = img->loaded;
+}
+
+/* Mirrors jkps_load_key_skin's "only touch the disk/GPU if the path
+ * actually changed" behavior, but for a whole atlas pack instead of a
+ * single flat image. */
+static void jkps_load_noteskin(struct jkps_noteskin *ns, bool *loaded, char *stored_path, size_t stored_path_size,
+				const char *new_path)
+{
+	if (strcmp(stored_path, new_path) == 0)
+		return;
+
+	if (*loaded) {
+		obs_enter_graphics();
+		jkps_noteskin_free(ns);
+		obs_leave_graphics();
+		*loaded = false;
+	}
+
+	strncpy(stored_path, new_path, stored_path_size - 1);
+	stored_path[stored_path_size - 1] = '\0';
+
+	if (new_path[0] == '\0')
+		return;
+
+	obs_enter_graphics();
+	*loaded = jkps_noteskin_load(new_path, ns);
+	obs_leave_graphics();
+}
+
+/* Which atlas (if any) should currently be drawn, based on the selected
+ * category. NULL means "no atlas active" - fall back to flat per-key skin
+ * images or the colored box, same as before this feature existed. */
+static struct jkps_noteskin *jkps_active_noteskin(struct jkps_source_context *ctx)
+{
+	if (ctx->skin_category == JKPS_SKIN_CAT_FUNKIN && ctx->funkin_noteskin_loaded)
+		return &ctx->funkin_noteskin;
+	if (ctx->skin_category == JKPS_SKIN_CAT_LOCAL && ctx->local_noteskin_loaded)
+		return &ctx->local_noteskin;
+	return NULL;
 }
 
 static void rebuild_canvas(struct jkps_source_context *ctx)
@@ -237,6 +315,32 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 				   obs_data_get_string(settings, key));
 	}
 
+	ctx->custom_skins_enabled = obs_data_get_bool(settings, "custom_skins_enabled");
+	ctx->skin_category = ctx->custom_skins_enabled
+				      ? (enum jkps_skin_category)obs_data_get_int(settings, "skin_category")
+				      : JKPS_SKIN_CAT_NATIVE;
+
+	jkps_load_noteskin(&ctx->funkin_noteskin, &ctx->funkin_noteskin_loaded, ctx->funkin_skin_xml,
+			   sizeof(ctx->funkin_skin_xml), obs_data_get_string(settings, "funkin_skin_xml"));
+	jkps_load_noteskin(&ctx->local_noteskin, &ctx->local_noteskin_loaded, ctx->local_skin_xml,
+			   sizeof(ctx->local_skin_xml), obs_data_get_string(settings, "local_skin_xml"));
+
+	const char *funkin_folder = obs_data_get_string(settings, "funkin_folder");
+	strncpy(ctx->funkin_folder, funkin_folder, sizeof(ctx->funkin_folder) - 1);
+	ctx->funkin_folder[sizeof(ctx->funkin_folder) - 1] = '\0';
+
+	const char *local_folder = obs_data_get_string(settings, "local_folder");
+	strncpy(ctx->local_folder, local_folder, sizeof(ctx->local_folder) - 1);
+	ctx->local_folder[sizeof(ctx->local_folder) - 1] = '\0';
+
+	/* Atlas noteskins are inherently 4-directional (left/down/up/right),
+	 * so picking one locks the layout to the first 4 key slots - Native
+	 * Skins remains the only category that supports 5K-8K. */
+	if (ctx->skin_category != JKPS_SKIN_CAT_NATIVE) {
+		for (int i = 4; i < JKPS_MAX_KEYS; i++)
+			ctx->key_enabled[i] = false;
+	}
+
 	ctx->vertical_layout = obs_data_get_bool(settings, "vertical_layout");
 	ctx->key_size = (int)obs_data_get_int(settings, "key_size");
 	ctx->key_spacing = (int)obs_data_get_int(settings, "key_spacing");
@@ -307,6 +411,17 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, "show_bpm", false);
 	obs_data_set_default_int(settings, "stats_font_size", 20);
 	obs_data_set_default_int(settings, "stats_color", 0xFFFFFFFF);
+
+	/* Custom (atlas) skins are opt-in and start on Native Skins - an
+	 * empty Funkin'/Local folder is otherwise indistinguishable from
+	 * "not configured yet" for a first-time user. */
+	obs_data_set_default_bool(settings, "custom_skins_enabled", false);
+	obs_data_set_default_int(settings, "skin_category", JKPS_SKIN_CAT_NATIVE);
+	obs_data_set_default_string(settings, "funkin_folder", "");
+	obs_data_set_default_string(settings, "funkin_skin_xml", "");
+	obs_data_set_default_string(settings, "local_folder", "");
+	obs_data_set_default_string(settings, "local_skin_xml", "");
+	obs_data_set_default_string(settings, "noteskins_info", obs_module_text("JkpsSource.NoteskinsInfo"));
 }
 
 /* Quick-apply theme presets: each bundles per-key colors with a corner
@@ -526,6 +641,68 @@ static bool jkps_theme_button_clicked(obs_properties_t *props, obs_property_t *p
 	return false;
 }
 
+/* (Re)fills a skin-name dropdown by scanning `folder` for packs. Always
+ * keeps a "None" entry first so the user can clear the selection. */
+static void jkps_populate_skin_list(obs_property_t *list, const char *folder)
+{
+	obs_property_list_clear(list);
+	obs_property_list_add_string(list, obs_module_text("JkpsSource.SkinNone"), "");
+
+	if (!folder || !folder[0])
+		return;
+
+	struct jkps_noteskin_entry entries[JKPS_NOTESKIN_MAX_ENTRIES];
+	int n = jkps_noteskin_scan_folder(folder, entries, JKPS_NOTESKIN_MAX_ENTRIES);
+	for (int i = 0; i < n; i++)
+		obs_property_list_add_string(list, entries[i].display_name, entries[i].xml_path);
+}
+
+static bool jkps_funkin_folder_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	jkps_populate_skin_list(obs_properties_get(props, "funkin_skin_xml"),
+				obs_data_get_string(settings, "funkin_folder"));
+	return true;
+}
+
+static bool jkps_local_folder_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	jkps_populate_skin_list(obs_properties_get(props, "local_skin_xml"),
+				obs_data_get_string(settings, "local_folder"));
+	return true;
+}
+
+/* Shared modified-callback for both "custom_skins_enabled" and
+ * "skin_category": shows/hides the folder+skin pickers for whichever
+ * category is active, and hides key slots 5-8 while an atlas skin is
+ * selected (they're inert at that point - atlas skins are 4K-only). */
+static bool jkps_skin_controls_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	bool enabled = obs_data_get_bool(settings, "custom_skins_enabled");
+	long long category = obs_data_get_int(settings, "skin_category");
+
+	obs_property_set_visible(obs_properties_get(props, "skin_category"), enabled);
+	obs_property_set_visible(obs_properties_get(props, "noteskins_info"), enabled);
+
+	bool show_funkin = enabled && category == JKPS_SKIN_CAT_FUNKIN;
+	bool show_local = enabled && category == JKPS_SKIN_CAT_LOCAL;
+	obs_property_set_visible(obs_properties_get(props, "funkin_folder"), show_funkin);
+	obs_property_set_visible(obs_properties_get(props, "funkin_skin_xml"), show_funkin);
+	obs_property_set_visible(obs_properties_get(props, "local_folder"), show_local);
+	obs_property_set_visible(obs_properties_get(props, "local_skin_xml"), show_local);
+
+	bool locked_to_4k = enabled && category != JKPS_SKIN_CAT_NATIVE;
+	for (int i = 4; i < JKPS_MAX_KEYS; i++) {
+		char group_name[32];
+		snprintf(group_name, sizeof(group_name), "key_group_%d", i);
+		obs_property_set_visible(obs_properties_get(props, group_name), !locked_to_4k);
+	}
+
+	return true;
+}
+
 static obs_properties_t *jkps_source_get_properties(void *data)
 {
 	struct jkps_source_context *ctx = data;
@@ -538,6 +715,54 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	}
 	obs_properties_add_group(props, "themes_group", obs_module_text("JkpsSource.Themes"), OBS_GROUP_NORMAL,
 				 themes_group);
+
+	/* Noteskins: Native Skins (the procedural themes above) vs real
+	 * atlas-format noteskins read from the user's own disk. Funkin'
+	 * Skins and Local Skins ship empty - obs-jkps never bundles any fan
+	 * or game art - and only show packs once the user points a folder
+	 * at their own. See NOTICE.md and jkps-noteskin.h. */
+	obs_properties_t *skins_group = obs_properties_create();
+
+	obs_property_t *enabled_prop = obs_properties_add_bool(skins_group, "custom_skins_enabled",
+								 obs_module_text("JkpsSource.CustomSkinsEnabled"));
+	obs_property_set_long_description(enabled_prop, obs_module_text("JkpsSource.CustomSkinsEnabledDesc"));
+	obs_property_set_modified_callback(enabled_prop, jkps_skin_controls_modified);
+
+	obs_properties_add_text(skins_group, "noteskins_info", obs_module_text("JkpsSource.NoteskinsInfoLabel"),
+				OBS_TEXT_INFO);
+
+	obs_property_t *cat_prop = obs_properties_add_list(skins_group, "skin_category",
+							    obs_module_text("JkpsSource.SkinCategory"),
+							    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(cat_prop, obs_module_text("JkpsSource.SkinCategoryNative"), JKPS_SKIN_CAT_NATIVE);
+	obs_property_list_add_int(cat_prop, obs_module_text("JkpsSource.SkinCategoryFunkin"), JKPS_SKIN_CAT_FUNKIN);
+	obs_property_list_add_int(cat_prop, obs_module_text("JkpsSource.SkinCategoryLocal"), JKPS_SKIN_CAT_LOCAL);
+	obs_property_set_modified_callback(cat_prop, jkps_skin_controls_modified);
+
+	obs_property_t *funkin_folder_prop =
+		obs_properties_add_path(skins_group, "funkin_folder", obs_module_text("JkpsSource.FunkinFolder"),
+					OBS_PATH_DIRECTORY, NULL, NULL);
+	obs_property_set_long_description(funkin_folder_prop, obs_module_text("JkpsSource.NoteskinsInfo"));
+	obs_property_set_modified_callback(funkin_folder_prop, jkps_funkin_folder_modified);
+
+	obs_property_t *funkin_skin_prop =
+		obs_properties_add_list(skins_group, "funkin_skin_xml", obs_module_text("JkpsSource.FunkinSkin"),
+					OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	jkps_populate_skin_list(funkin_skin_prop, ctx ? ctx->funkin_folder : NULL);
+
+	obs_property_t *local_folder_prop =
+		obs_properties_add_path(skins_group, "local_folder", obs_module_text("JkpsSource.LocalFolder"),
+					OBS_PATH_DIRECTORY, NULL, NULL);
+	obs_property_set_long_description(local_folder_prop, obs_module_text("JkpsSource.NoteskinsInfo"));
+	obs_property_set_modified_callback(local_folder_prop, jkps_local_folder_modified);
+
+	obs_property_t *local_skin_prop =
+		obs_properties_add_list(skins_group, "local_skin_xml", obs_module_text("JkpsSource.LocalSkin"),
+					OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	jkps_populate_skin_list(local_skin_prop, ctx ? ctx->local_folder : NULL);
+
+	obs_properties_add_group(props, "skins_group", obs_module_text("JkpsSource.NoteskinsGroup"), OBS_GROUP_NORMAL,
+				 skins_group);
 
 	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
 		char group_name[32], enabled_name[32], vcode_name[32], label_name[32], group_title[64];
@@ -628,6 +853,10 @@ static void jkps_source_destroy(void *data)
 		if (ctx->key_skin_pressed_loaded[i])
 			gs_image_file_free(&ctx->key_skin_pressed_img[i]);
 	}
+	if (ctx->funkin_noteskin_loaded)
+		jkps_noteskin_free(&ctx->funkin_noteskin);
+	if (ctx->local_noteskin_loaded)
+		jkps_noteskin_free(&ctx->local_noteskin);
 	obs_leave_graphics();
 
 	free(ctx->pixel_buffer);
@@ -667,6 +896,8 @@ static void jkps_source_video_tick(void *data, float seconds)
 	struct jkps_render_params p;
 	memset(&p, 0, sizeof(p));
 
+	struct jkps_noteskin *active_skin = jkps_active_noteskin(ctx);
+
 	int active = 0;
 	int slot_to_key[JKPS_MAX_KEYS];
 	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
@@ -677,7 +908,8 @@ static void jkps_source_video_tick(void *data, float seconds)
 		p.keys[active].total = ctx->keys[i].total_presses;
 		p.keys[active].color_idle = ctx->key_color_idle[i];
 		p.keys[active].color_pressed = ctx->key_color_pressed[i];
-		p.keys[active].has_custom_skin = ctx->key_skin_idle_loaded[i] || ctx->key_skin_pressed_loaded[i];
+		p.keys[active].has_custom_skin = ctx->key_skin_idle_loaded[i] || ctx->key_skin_pressed_loaded[i] ||
+						  (active_skin != NULL && i < 4);
 		memcpy(p.keys[active].trail, ctx->trail[i], sizeof(p.keys[active].trail));
 		slot_to_key[active] = i;
 		active++;
@@ -724,6 +956,35 @@ static void jkps_source_video_tick(void *data, float seconds)
 	}
 }
 
+/* obs_source_draw() can only draw a whole texture scaled into a box - it has
+ * no source-rectangle support - so atlas noteskin frames (a crop out of one
+ * big sheet) need this instead. Draws the `src` pixel rect of `tex` scaled
+ * to fill a dst_w x dst_h box at (dst_x, dst_y). */
+static void jkps_draw_atlas_subregion(gs_texture_t *tex, int dst_x, int dst_y, int dst_w, int dst_h,
+				       const struct jkps_atlas_rect *src)
+{
+	if (!tex || !src->valid || dst_w <= 0 || dst_h <= 0 || src->w <= 0 || src->h <= 0)
+		return;
+
+	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
+	gs_effect_set_texture(image, tex);
+
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
+
+	while (gs_effect_loop(effect, "Draw")) {
+		gs_matrix_push();
+		gs_matrix_translate3f((float)dst_x, (float)dst_y, 0.0f);
+		gs_matrix_scale3f((float)dst_w / (float)src->w, (float)dst_h / (float)src->h, 1.0f);
+		gs_draw_sprite_subregion(tex, 0, (uint32_t)src->x, (uint32_t)src->y, (uint32_t)src->w,
+					 (uint32_t)src->h);
+		gs_matrix_pop();
+	}
+
+	gs_blend_state_pop();
+}
+
 static void jkps_source_video_render(void *data, gs_effect_t *effect)
 {
 	UNUSED_PARAMETER(effect);
@@ -733,11 +994,27 @@ static void jkps_source_video_render(void *data, gs_effect_t *effect)
 
 	obs_source_draw(ctx->texture, 0, 0, 0, 0, false);
 
+	struct jkps_noteskin *active_skin = jkps_active_noteskin(ctx);
+
 	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
 		if (!ctx->key_enabled[i])
 			continue;
 
 		bool down = ctx->keys[i].down;
+
+		/* Atlas noteskin takes priority over the flat per-key images
+		 * below, and only ever applies to slots 0-3 (the ones a
+		 * locked-to-4K layout actually has). */
+		if (active_skin && i < 4) {
+			enum jkps_noteskin_state state = down ? JKPS_SKIN_PRESSED : JKPS_SKIN_STATIC;
+			const struct jkps_atlas_rect *frame = &active_skin->frames[jkps_slot_to_dir[i]][state];
+			if (frame->valid) {
+				jkps_draw_atlas_subregion(active_skin->atlas_img.texture, ctx->key_screen_x[i],
+							  ctx->key_screen_y[i], ctx->key_size, ctx->key_size, frame);
+				continue;
+			}
+		}
+
 		gs_image_file_t *img = NULL;
 		if (down && ctx->key_skin_pressed_loaded[i])
 			img = &ctx->key_skin_pressed_img[i];
