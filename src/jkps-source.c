@@ -687,6 +687,8 @@ static bool jkps_skin_controls_modified(obs_properties_t *props, obs_property_t 
 
 	bool show_funkin = enabled && category == JKPS_SKIN_CAT_FUNKIN;
 	bool show_local = enabled && category == JKPS_SKIN_CAT_LOCAL;
+	bool show_native = !enabled || category == JKPS_SKIN_CAT_NATIVE;
+	obs_property_set_visible(obs_properties_get(props, "themes_group"), show_native);
 	obs_property_set_visible(obs_properties_get(props, "funkin_folder"), show_funkin);
 	obs_property_set_visible(obs_properties_get(props, "funkin_skin_xml"), show_funkin);
 	obs_property_set_visible(obs_properties_get(props, "local_folder"), show_local);
@@ -706,14 +708,6 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 {
 	struct jkps_source_context *ctx = data;
 	obs_properties_t *props = obs_properties_create();
-
-	obs_properties_t *themes_group = obs_properties_create();
-	for (size_t i = 0; i < JKPS_THEME_COUNT; i++) {
-		obs_properties_add_button(themes_group, jkps_themes[i].id, obs_module_text(jkps_themes[i].locale_key),
-					  jkps_theme_button_clicked);
-	}
-	obs_properties_add_group(props, "themes_group", obs_module_text("JkpsSource.Themes"), OBS_GROUP_NORMAL,
-				 themes_group);
 
 	/* Noteskins: Native Skins (the procedural themes above) vs real
 	 * atlas-format noteskins read from the user's own disk. Funkin'
@@ -737,6 +731,17 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_property_list_add_int(cat_prop, obs_module_text("JkpsSource.SkinCategoryFunkin"), JKPS_SKIN_CAT_FUNKIN);
 	obs_property_list_add_int(cat_prop, obs_module_text("JkpsSource.SkinCategoryLocal"), JKPS_SKIN_CAT_LOCAL);
 	obs_property_set_modified_callback(cat_prop, jkps_skin_controls_modified);
+
+	/* Native Skins: the procedural color-theme presets. Lives nested
+	 * here (instead of its own always-visible top-level group) so it
+	 * only shows up while "Native" is the active category. */
+	obs_properties_t *themes_group = obs_properties_create();
+	for (size_t i = 0; i < JKPS_THEME_COUNT; i++) {
+		obs_properties_add_button(themes_group, jkps_themes[i].id, obs_module_text(jkps_themes[i].locale_key),
+					  jkps_theme_button_clicked);
+	}
+	obs_properties_add_group(skins_group, "themes_group", obs_module_text("JkpsSource.Themes"), OBS_GROUP_NORMAL,
+				 themes_group);
 
 	obs_property_t *funkin_folder_prop = obs_properties_add_path(skins_group, "funkin_folder",
 								     obs_module_text("JkpsSource.FunkinFolder"),
