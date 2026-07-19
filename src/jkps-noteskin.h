@@ -85,14 +85,15 @@ struct jkps_noteskin_entry {
 	char xml_path[JKPS_NOTESKIN_PATH_LEN];
 };
 
-/* Scans `folder` one level deep for subfolders that each contain exactly
- * one .xml + matching .png pair (a "pack"), so the user can drop several
- * noteskin packs into one root folder and see them all listed. Also checks
- * whether `folder` itself directly contains a pack at its root (single
- * .xml + .png with the same name) and lists that too - both checks always
- * run together, so a folder that's simultaneously a pack AND a container
- * of more packs in subfolders shows all of them. Returns the number of
- * packs found and written into out_entries (capped at max_entries). */
+/* Recursively scans `folder` (a few levels deep) for every .xml file that
+ * has a same-named .png sitting next to it (a "pack"), so the user can drop
+ * noteskin packs into a root folder - directly, one folder deep, or nested
+ * inside a "collection" folder that groups several packs together - and see
+ * all of them listed. A folder that flattens several packs into one place
+ * (no subfolders of their own) gets each entry's name disambiguated with
+ * its xml filename; a folder holding exactly one pack keeps a clean name.
+ * Returns the number of packs found and written into out_entries (capped at
+ * max_entries). */
 int jkps_noteskin_scan_folder(const char *folder, struct jkps_noteskin_entry *out_entries, int max_entries);
 
 #ifdef __cplusplus

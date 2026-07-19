@@ -253,45 +253,6 @@ void jkps_noteskin_free(struct jkps_noteskin *ns)
 
 /* ---- folder scanning --------------------------------------------------- */
 
-/* Looks directly inside dir_path (one level, no recursion) for exactly one
- * .xml file that has a same-named .png sitting next to it. */
-static bool find_single_pack_in_dir(const char *dir_path, char *xml_path_out, size_t out_size)
-{
-	os_dir_t *dir = os_opendir(dir_path);
-	if (!dir)
-		return false;
-
-	bool found = false;
-	struct os_dirent *ent;
-	while ((ent = os_readdir(dir)) != NULL) {
-		if (ent->directory)
-			continue;
-		if (!ends_with_ci(ent->d_name, ".xml"))
-			continue;
-
-		char xml_path[JKPS_NOTESKIN_PATH_LEN];
-		int xml_path_len = snprintf(xml_path, sizeof(xml_path), "%s/%s", dir_path, ent->d_name);
-		if (xml_path_len < 0 || (size_t)xml_path_len >= sizeof(xml_path))
-			continue; /* path too long, skip this entry */
-
-		char png_path[JKPS_NOTESKIN_PATH_LEN];
-		strncpy(png_path, xml_path, sizeof(png_path) - 1);
-		png_path[sizeof(png_path) - 1] = '\0';
-		xml_path_to_png(png_path);
-
-		if (!file_exists(png_path))
-			continue;
-
-		strncpy(xml_path_out, xml_path, out_size - 1);
-		xml_path_out[out_size - 1] = '\0';
-		found = true;
-		break; /* first valid pair wins */
-	}
-
-	os_closedir(dir);
-	return found;
-}
-
 static void basename_into(const char *path, char *out, size_t out_size)
 {
 	const char *slash = strrchr(path, '/');
@@ -316,79 +277,126 @@ static void basename_noext_into(const char *path, char *out, size_t out_size)
 		out[len - 4] = '\0';
 }
 
-int jkps_noteskin_scan_folder(const char *folder, struct jkps_noteskin_entry *out_entries, int max_entries)
+/* How many folder levels deep to look for packs below the root the user
+ * points the plugin at. Covers root/Pack/xml+png (1), root/Collection/Pack/
+ * xml+png (2), and one more spare level for anything packaged a bit deeper
+ * without letting a pathological folder tree recurse forever. */
+#define JKPS_NOTESKIN_MAX_SCAN_DEPTH 4
+
+/* Walks dir_path looking for .xml+.png pairs, at any depth up to
+ * JKPS_NOTESKIN_MAX_SCAN_DEPTH below the original root. label_hint is the
+ * name of the folder that led here (NULL at the root itself) and is used to
+ * build a readable display name:
+ *   - a folder holding exactly one pack keeps a clean name (just the
+ *     folder's own name, e.g. "Dash Note Noteskin");
+ *   - a folder that flattens several packs together (e.g. a "noteSkins"
+ *     folder full of loose xml/png pairs) disambiguates each one with its
+ *     xml filename appended (e.g. "noteSkins - 17bucks"). */
+static void jkps_noteskin_collect(const char *dir_path, const char *label_hint,
+				   struct jkps_noteskin_entry *out_entries, int *count, int max_entries, int depth)
 {
-	if (!folder || !folder[0] || max_entries <= 0)
-		return 0;
+	if (*count >= max_entries || depth > JKPS_NOTESKIN_MAX_SCAN_DEPTH)
+		return;
 
-	int count = 0;
-
-	/* List every valid .xml+.png pair found directly at the folder's
-	 * root - not just the first one - so pointing at a folder that has
-	 * several packs dumped flat inside it (no subfolders) lets the user
-	 * pick between all of them instead of silently only ever offering
-	 * whichever pair the OS happens to enumerate first. */
-	os_dir_t *root_dir = os_opendir(folder);
-	if (root_dir) {
-		struct os_dirent *root_ent;
-		while (count < max_entries && (root_ent = os_readdir(root_dir)) != NULL) {
-			if (root_ent->directory)
-				continue;
-			if (!ends_with_ci(root_ent->d_name, ".xml"))
-				continue;
-
-			char xml_path[JKPS_NOTESKIN_PATH_LEN];
-			int xml_path_len = snprintf(xml_path, sizeof(xml_path), "%s/%s", folder, root_ent->d_name);
-			if (xml_path_len < 0 || (size_t)xml_path_len >= sizeof(xml_path))
-				continue; /* path too long, skip this entry */
-
-			char png_path[JKPS_NOTESKIN_PATH_LEN];
-			strncpy(png_path, xml_path, sizeof(png_path) - 1);
-			png_path[sizeof(png_path) - 1] = '\0';
-			xml_path_to_png(png_path);
-
-			if (!file_exists(png_path))
-				continue;
-
-			strncpy(out_entries[count].xml_path, xml_path, sizeof(out_entries[count].xml_path) - 1);
-			out_entries[count].xml_path[sizeof(out_entries[count].xml_path) - 1] = '\0';
-			basename_noext_into(xml_path, out_entries[count].display_name,
-					    sizeof(out_entries[count].display_name));
-			count++;
-		}
-		os_closedir(root_dir);
-	}
-
-	/* Plus one entry per subfolder that is itself a pack, so a root
-	 * folder holding several noteskins (each in its own subfolder) lists
-	 * all of them alongside anything found directly above. */
-	os_dir_t *dir = os_opendir(folder);
+	/* Pass 1: how many valid pairs live directly in this folder? Decides
+	 * whether entries below need the xml filename appended to stay
+	 * distinguishable from each other. */
+	int local_pairs = 0;
+	os_dir_t *dir = os_opendir(dir_path);
 	if (!dir)
-		return count;
-
+		return;
 	struct os_dirent *ent;
-	while (count < max_entries && (ent = os_readdir(dir)) != NULL) {
+	while ((ent = os_readdir(dir)) != NULL) {
+		if (ent->directory || !ends_with_ci(ent->d_name, ".xml"))
+			continue;
+
+		char xml_path[JKPS_NOTESKIN_PATH_LEN];
+		int len = snprintf(xml_path, sizeof(xml_path), "%s/%s", dir_path, ent->d_name);
+		if (len < 0 || (size_t)len >= sizeof(xml_path))
+			continue;
+
+		char png_path[JKPS_NOTESKIN_PATH_LEN];
+		strncpy(png_path, xml_path, sizeof(png_path) - 1);
+		png_path[sizeof(png_path) - 1] = '\0';
+		xml_path_to_png(png_path);
+
+		if (file_exists(png_path))
+			local_pairs++;
+	}
+	os_closedir(dir);
+
+	/* Pass 2: emit an entry per valid pair found directly here. */
+	dir = os_opendir(dir_path);
+	if (!dir)
+		return;
+	while (*count < max_entries && (ent = os_readdir(dir)) != NULL) {
+		if (ent->directory || !ends_with_ci(ent->d_name, ".xml"))
+			continue;
+
+		char xml_path[JKPS_NOTESKIN_PATH_LEN];
+		int len = snprintf(xml_path, sizeof(xml_path), "%s/%s", dir_path, ent->d_name);
+		if (len < 0 || (size_t)len >= sizeof(xml_path))
+			continue;
+
+		char png_path[JKPS_NOTESKIN_PATH_LEN];
+		strncpy(png_path, xml_path, sizeof(png_path) - 1);
+		png_path[sizeof(png_path) - 1] = '\0';
+		xml_path_to_png(png_path);
+
+		if (!file_exists(png_path))
+			continue;
+
+		struct jkps_noteskin_entry *out = &out_entries[*count];
+		strncpy(out->xml_path, xml_path, sizeof(out->xml_path) - 1);
+		out->xml_path[sizeof(out->xml_path) - 1] = '\0';
+
+		if (local_pairs > 1) {
+			char base[JKPS_NOTESKIN_NAME_LEN];
+			basename_noext_into(ent->d_name, base, sizeof(base));
+			if (label_hint && label_hint[0])
+				snprintf(out->display_name, sizeof(out->display_name), "%s - %s", label_hint, base);
+			else
+				strncpy(out->display_name, base, sizeof(out->display_name) - 1),
+					out->display_name[sizeof(out->display_name) - 1] = '\0';
+		} else if (label_hint && label_hint[0]) {
+			strncpy(out->display_name, label_hint, sizeof(out->display_name) - 1);
+			out->display_name[sizeof(out->display_name) - 1] = '\0';
+		} else {
+			basename_noext_into(ent->d_name, out->display_name, sizeof(out->display_name));
+		}
+
+		(*count)++;
+	}
+	os_closedir(dir);
+
+	/* Pass 3: recurse into subfolders, each labeled with its own name so
+	 * packs nested inside a "collection" folder (or a collection nested
+	 * inside another one) stay identifiable however deep they sit. */
+	dir = os_opendir(dir_path);
+	if (!dir)
+		return;
+	while (*count < max_entries && (ent = os_readdir(dir)) != NULL) {
 		if (!ent->directory)
 			continue;
 		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
 			continue;
 
 		char subdir[JKPS_NOTESKIN_PATH_LEN];
-		int subdir_len = snprintf(subdir, sizeof(subdir), "%s/%s", folder, ent->d_name);
-		if (subdir_len < 0 || (size_t)subdir_len >= sizeof(subdir))
-			continue; /* path too long, skip this entry */
-
-		char xml_path[JKPS_NOTESKIN_PATH_LEN];
-		if (!find_single_pack_in_dir(subdir, xml_path, sizeof(xml_path)))
+		int len = snprintf(subdir, sizeof(subdir), "%s/%s", dir_path, ent->d_name);
+		if (len < 0 || (size_t)len >= sizeof(subdir))
 			continue;
 
-		strncpy(out_entries[count].xml_path, xml_path, sizeof(out_entries[count].xml_path) - 1);
-		out_entries[count].xml_path[sizeof(out_entries[count].xml_path) - 1] = '\0';
-		strncpy(out_entries[count].display_name, ent->d_name, sizeof(out_entries[count].display_name) - 1);
-		out_entries[count].display_name[sizeof(out_entries[count].display_name) - 1] = '\0';
-		count++;
+		jkps_noteskin_collect(subdir, ent->d_name, out_entries, count, max_entries, depth + 1);
 	}
 	os_closedir(dir);
+}
 
+int jkps_noteskin_scan_folder(const char *folder, struct jkps_noteskin_entry *out_entries, int max_entries)
+{
+	if (!folder || !folder[0] || max_entries <= 0)
+		return 0;
+
+	int count = 0;
+	jkps_noteskin_collect(folder, NULL, out_entries, &count, max_entries, 0);
 	return count;
 }
