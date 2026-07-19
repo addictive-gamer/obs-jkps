@@ -303,6 +303,17 @@ static void basename_into(const char *path, char *out, size_t out_size)
 	out[out_size - 1] = '\0';
 }
 
+/* Same as basename_into, but also strips a trailing ".xml" (case
+ * insensitive), so a pack's display name reads "Bf Skin" instead of
+ * "Bf Skin.xml". */
+static void basename_noext_into(const char *path, char *out, size_t out_size)
+{
+	basename_into(path, out, out_size);
+	size_t len = strlen(out);
+	if (ends_with_ci(out, ".xml"))
+		out[len - 4] = '\0';
+}
+
 int jkps_noteskin_scan_folder(const char *folder, struct jkps_noteskin_entry *out_entries, int max_entries)
 {
 	if (!folder || !folder[0] || max_entries <= 0)
@@ -310,16 +321,38 @@ int jkps_noteskin_scan_folder(const char *folder, struct jkps_noteskin_entry *ou
 
 	int count = 0;
 
-	/* The folder itself may directly BE a pack (a .xml right at its
-	 * root) - list that first, using the folder's own name, so pointing
-	 * straight at one pack's folder works even if it also happens to
-	 * have subfolders in it. */
-	char direct_xml[JKPS_NOTESKIN_PATH_LEN];
-	if (count < max_entries && find_single_pack_in_dir(folder, direct_xml, sizeof(direct_xml))) {
-		strncpy(out_entries[count].xml_path, direct_xml, sizeof(out_entries[count].xml_path) - 1);
-		out_entries[count].xml_path[sizeof(out_entries[count].xml_path) - 1] = '\0';
-		basename_into(folder, out_entries[count].display_name, sizeof(out_entries[count].display_name));
-		count++;
+	/* List every valid .xml+.png pair found directly at the folder's
+	 * root - not just the first one - so pointing at a folder that has
+	 * several packs dumped flat inside it (no subfolders) lets the user
+	 * pick between all of them instead of silently only ever offering
+	 * whichever pair the OS happens to enumerate first. */
+	os_dir_t *root_dir = os_opendir(folder);
+	if (root_dir) {
+		struct os_dirent *root_ent;
+		while (count < max_entries && (root_ent = os_readdir(root_dir)) != NULL) {
+			if (root_ent->directory)
+				continue;
+			if (!ends_with_ci(root_ent->d_name, ".xml"))
+				continue;
+
+			char xml_path[JKPS_NOTESKIN_PATH_LEN];
+			snprintf(xml_path, sizeof(xml_path), "%s/%s", folder, root_ent->d_name);
+
+			char png_path[JKPS_NOTESKIN_PATH_LEN];
+			strncpy(png_path, xml_path, sizeof(png_path) - 1);
+			png_path[sizeof(png_path) - 1] = '\0';
+			xml_path_to_png(png_path);
+
+			if (!file_exists(png_path))
+				continue;
+
+			strncpy(out_entries[count].xml_path, xml_path, sizeof(out_entries[count].xml_path) - 1);
+			out_entries[count].xml_path[sizeof(out_entries[count].xml_path) - 1] = '\0';
+			basename_noext_into(xml_path, out_entries[count].display_name,
+					    sizeof(out_entries[count].display_name));
+			count++;
+		}
+		os_closedir(root_dir);
 	}
 
 	/* Plus one entry per subfolder that is itself a pack, so a root
