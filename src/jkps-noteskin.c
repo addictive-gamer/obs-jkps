@@ -270,7 +270,9 @@ static bool find_single_pack_in_dir(const char *dir_path, char *xml_path_out, si
 			continue;
 
 		char xml_path[JKPS_NOTESKIN_PATH_LEN];
-		snprintf(xml_path, sizeof(xml_path), "%s/%s", dir_path, ent->d_name);
+		int xml_path_len = snprintf(xml_path, sizeof(xml_path), "%s/%s", dir_path, ent->d_name);
+		if (xml_path_len < 0 || (size_t)xml_path_len >= sizeof(xml_path))
+			continue; /* path too long, skip this entry */
 
 		char png_path[JKPS_NOTESKIN_PATH_LEN];
 		strncpy(png_path, xml_path, sizeof(png_path) - 1);
@@ -336,7 +338,9 @@ int jkps_noteskin_scan_folder(const char *folder, struct jkps_noteskin_entry *ou
 				continue;
 
 			char xml_path[JKPS_NOTESKIN_PATH_LEN];
-			snprintf(xml_path, sizeof(xml_path), "%s/%s", folder, root_ent->d_name);
+			int xml_path_len = snprintf(xml_path, sizeof(xml_path), "%s/%s", folder, root_ent->d_name);
+			if (xml_path_len < 0 || (size_t)xml_path_len >= sizeof(xml_path))
+				continue; /* path too long, skip this entry */
 
 			char png_path[JKPS_NOTESKIN_PATH_LEN];
 			strncpy(png_path, xml_path, sizeof(png_path) - 1);
@@ -370,7 +374,9 @@ int jkps_noteskin_scan_folder(const char *folder, struct jkps_noteskin_entry *ou
 			continue;
 
 		char subdir[JKPS_NOTESKIN_PATH_LEN];
-		snprintf(subdir, sizeof(subdir), "%s/%s", folder, ent->d_name);
+		int subdir_len = snprintf(subdir, sizeof(subdir), "%s/%s", folder, ent->d_name);
+		if (subdir_len < 0 || (size_t)subdir_len >= sizeof(subdir))
+			continue; /* path too long, skip this entry */
 
 		char xml_path[JKPS_NOTESKIN_PATH_LEN];
 		if (!find_single_pack_in_dir(subdir, xml_path, sizeof(xml_path)))
