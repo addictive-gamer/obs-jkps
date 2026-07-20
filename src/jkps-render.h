@@ -38,13 +38,26 @@ struct jkps_render_key {
 	float press_level;
 
 	/* Current height (px) of the press bar: grows from 0 toward
-	 * press_bar_max_height while held, shrinks back to 0 on release. */
+	 * press_bar_max_height while held; drops to 0 the instant the key is
+	 * released (see float_bar_* below - the visible piece doesn't retract,
+	 * it detaches instead). */
 	float press_bar_px;
+
+	/* The just-released segment: instead of shrinking back into the key,
+	 * it keeps its height (float_bar_len, frozen at whatever press_bar_px
+	 * was at the moment of release) and drifts away from the key
+	 * (float_bar_drift, growing each tick), fading out (float_bar_alpha,
+	 * 1..0) as it nears/exits the press_bar_max_height margin. len <= 0
+	 * means there's no floating remnant to draw. */
+	float float_bar_len;
+	float float_bar_drift;
+	float float_bar_alpha;
 
 	/* True when the active Funkin' Skin ships hold/sustain art for this
 	 * lane: the caller draws that art (tiled) on top instead, so the
 	 * flat-color bar below is skipped entirely rather than showing
-	 * through underneath it. */
+	 * through underneath it. Only applies to the anchored (still-held)
+	 * bar; the floating/fading remnant always uses the flat color. */
 	bool use_custom_hold_bar;
 
 	uint32_t color_idle;

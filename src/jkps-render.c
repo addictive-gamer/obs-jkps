@@ -327,6 +327,30 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 					fill_rounded_rect(pixels, width, height, bar_x, bar_y, bar_w, bar_h,
 							  p->trail_color, p->corner_radius);
 			}
+
+			/* The just-released remnant: detached from the key, drifting
+			 * further away and fading out - instead of shrinking back
+			 * down, it keeps traveling like a released hold-note tail. */
+			if (p->keys[i].float_bar_len > 0.5f && p->keys[i].float_bar_alpha > 0.01f) {
+				int flen = (int)(p->keys[i].float_bar_len + 0.5f);
+				int fdrift = (int)(p->keys[i].float_bar_drift + 0.5f);
+
+				int fx = x, fy = y;
+				if (p->vertical_layout)
+					fx += p->key_size + fdrift;
+				else
+					fy -= fdrift + flen;
+
+				int fw = p->vertical_layout ? flen : p->key_size;
+				int fh = p->vertical_layout ? p->key_size : flen;
+
+				uint32_t base = p->trail_color;
+				uint8_t base_a = (uint8_t)((base >> 24) & 0xFF);
+				uint8_t faded_a = (uint8_t)((float)base_a * p->keys[i].float_bar_alpha);
+				uint32_t faded_color = (base & 0x00FFFFFFu) | ((uint32_t)faded_a << 24);
+
+				fill_rounded_rect(pixels, width, height, fx, fy, fw, fh, faded_color, p->corner_radius);
+			}
 		}
 
 		uint32_t box_color = p->keys[i].down ? p->keys[i].color_pressed : p->keys[i].color_idle;

@@ -76,6 +76,10 @@ struct jkps_source_context {
 	float kps_history[JKPS_KPS_GRAPH_SAMPLES];
 	float press_level[JKPS_MAX_KEYS];  /* 0..1, drives bars-mode VU fill */
 	float press_bar_px[JKPS_MAX_KEYS]; /* current press-bar height in px */
+	bool press_bar_was_down[JKPS_MAX_KEYS];
+	float float_bar_len[JKPS_MAX_KEYS];   /* 0 = no floating remnant active */
+	float float_bar_drift[JKPS_MAX_KEYS]; /* px traveled since detaching from the key */
+	float float_bar_alpha[JKPS_MAX_KEYS]; /* 1..0 fade as it exits the margin */
 
 	uint32_t key_color_idle[JKPS_MAX_KEYS];
 	uint32_t key_color_pressed[JKPS_MAX_KEYS];
@@ -583,19 +587,21 @@ static const struct jkps_theme jkps_themes[] = {
 };
 #define JKPS_THEME_COUNT (sizeof(jkps_themes) / sizeof(jkps_themes[0]))
 
-static bool jkps_theme_list_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+static bool jkps_theme_list_modified(void *data, obs_properties_t *props, obs_property_t *property,
+				     obs_data_t *settings)
 {
 	UNUSED_PARAMETER(props);
 	UNUSED_PARAMETER(property);
+	struct jkps_source_context *ctx = data;
 
 	long long idx = obs_data_get_int(settings, "native_theme");
 	if (idx < 0 || (size_t)idx >= JKPS_THEME_COUNT)
 		return false;
 
-	/* Only the theme picker's own value changed here - the rest of the
-	 * theme's settings (colors, corner radius, bars mode) still need to
-	 * be pushed into `settings` so the properties dialog reflects them,
-	 * same as the old per-theme buttons did. */
+	/* Only the theme picker's own value is guaranteed to already be
+	 * committed here - the rest of the theme's settings (colors, corner
+	 * radius, bars mode) still need to be pushed in ourselves, same as
+	 * the old per-theme buttons did. */
 	const struct jkps_theme *theme = &jkps_themes[idx];
 	char key[32];
 	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
@@ -615,6 +621,18 @@ static bool jkps_theme_list_modified(obs_properties_t *props, obs_property_t *pr
 	obs_data_set_int(settings, "corner_radius", theme->corner_radius);
 	obs_data_set_bool(settings, "bars_mode", theme->bars_mode);
 
+	/* A list's own selected value is committed by the properties dialog
+	 * automatically, but the *extra* fields above are only guaranteed to
+	 * actually take effect on the running source if we push them through
+	 * ourselves here - same as the buttons this replaced used to do via
+	 * obs_source_update, rather than relying on the dialog to notice a
+	 * modified-callback touched other settings behind its back. */
+	if (ctx && ctx->source)
+		obs_source_update(ctx->source, settings);
+
+	/* Still return true so the dialog's own widgets (color pickers,
+	 * corner-radius slider, bars-mode checkbox) refresh to show the new
+	 * values instead of the stale ones. */
 	return true;
 }
 
@@ -706,7 +724,7 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 							     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	for (size_t i = 0; i < JKPS_THEME_COUNT; i++)
 		obs_property_list_add_int(theme_prop, obs_module_text(jkps_themes[i].locale_key), (long long)i);
-	obs_property_set_modified_callback(theme_prop, jkps_theme_list_modified);
+	obs_property_set_modified_callback2(theme_prop, jkps_theme_list_modified, ctx);
 
 	obs_property_t *funkin_folder_prop = obs_properties_add_path(skins_group, "funkin_folder",
 								     obs_module_text("JkpsSource.FunkinFolder"),
@@ -838,9 +856,12 @@ static void jkps_source_video_tick(void *data, float seconds)
 	/* press_level: instant jump on press, exponential decay on release -
 	 * still used as-is for the bars-mode VU-meter fill.
 	 * press_bar_px: eases toward press_bar_max_height while held (fast
-	 * rise) and eases back down to 0 on release (smooth retract), giving
-	 * a single solid bar that visibly grows/shrinks rather than a trail
-	 * of fading segments. */
+	 * rise). On release it does NOT shrink back into the key anymore -
+	 * it drops to 0 immediately and hands off its current height to a
+	 * separate floating remnant (float_bar_*) that keeps drifting away
+	 * from the key and fades out as it nears/exits the margin, like a
+	 * released hold-note tail continuing to scroll off instead of
+	 * snapping back. */
 	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
 		bool down = ctx->keys[i].down;
 		ctx->press_level[i] = down ? 1.0f : ctx->press_level[i] * 0.55f;
@@ -851,9 +872,36 @@ static void jkps_source_video_tick(void *data, float seconds)
 			if (ctx->press_bar_px[i] > max_h)
 				ctx->press_bar_px[i] = max_h;
 		} else {
-			ctx->press_bar_px[i] *= 0.75f;
-			if (ctx->press_bar_px[i] < 0.5f)
-				ctx->press_bar_px[i] = 0.0f;
+			if (ctx->press_bar_was_down[i] && ctx->press_bar_px[i] > 0.5f) {
+				ctx->float_bar_len[i] = ctx->press_bar_px[i];
+				ctx->float_bar_drift[i] = 0.0f;
+				ctx->float_bar_alpha[i] = 1.0f;
+			}
+			ctx->press_bar_px[i] = 0.0f;
+		}
+		ctx->press_bar_was_down[i] = down;
+
+		if (ctx->float_bar_len[i] > 0.0f) {
+			/* Drift speed: crosses the full margin in ~1.1s at 30
+			 * ticks/sec, independent of how tall the piece is. */
+			ctx->float_bar_drift[i] += max_h * 0.03f;
+
+			float top_edge = ctx->float_bar_drift[i] + ctx->float_bar_len[i];
+			if (top_edge >= max_h) {
+				/* Fades out over a distance equal to its own
+				 * height once its leading edge exits the margin,
+				 * so a tall bar (barely tapped) doesn't vanish
+				 * instantly while a short one lingers oddly long. */
+				float fade_span = ctx->float_bar_len[i] > 1.0f ? ctx->float_bar_len[i] : 1.0f;
+				float past = top_edge - max_h;
+				float alpha = 1.0f - past / fade_span;
+				if (alpha <= 0.0f) {
+					ctx->float_bar_len[i] = 0.0f;
+					ctx->float_bar_alpha[i] = 0.0f;
+				} else {
+					ctx->float_bar_alpha[i] = alpha;
+				}
+			}
 		}
 	}
 
@@ -881,6 +929,9 @@ static void jkps_source_video_tick(void *data, float seconds)
 						 (active_skin != NULL && i < 4);
 		p.keys[active].press_level = ctx->press_level[i];
 		p.keys[active].press_bar_px = ctx->press_bar_px[i];
+		p.keys[active].float_bar_len = ctx->float_bar_len[i];
+		p.keys[active].float_bar_drift = ctx->float_bar_drift[i];
+		p.keys[active].float_bar_alpha = ctx->float_bar_alpha[i];
 		p.keys[active].use_custom_hold_bar =
 			active_skin != NULL && i < 4 &&
 			(active_skin->hold_piece[jkps_slot_to_dir[i]].valid ||
