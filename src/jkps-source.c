@@ -1024,23 +1024,30 @@ static void jkps_draw_atlas_subregion(gs_texture_t *tex, int dst_x, int dst_y, i
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
 
-	while (gs_effect_loop(effect, "Draw")) {
-		gs_matrix_push();
-		/* Pivot around the visible rect's center so a 90 deg turn (for
-		 * rotated frames) lands the content back in the same place
-		 * instead of spinning it off to a corner. */
-		gs_matrix_translate3f(vis_dst_x + vis_dst_w * 0.5f, vis_dst_y + vis_dst_h * 0.5f, 0.0f);
-		if (src->rotated) {
-			gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, -1.57079632679f /* -90 deg */);
-			gs_matrix_scale3f(vis_dst_h / (float)src->w, vis_dst_w / (float)src->h, 1.0f);
-		} else {
-			gs_matrix_scale3f(vis_dst_w / (float)src->w, vis_dst_h / (float)src->h, 1.0f);
-		}
-		gs_matrix_translate3f(-(float)src->w * 0.5f, -(float)src->h * 0.5f, 0.0f);
-		gs_draw_sprite_subregion(tex, 0, (uint32_t)src->x, (uint32_t)src->y, (uint32_t)src->w,
-					 (uint32_t)src->h);
-		gs_matrix_pop();
+	/* No gs_effect_loop here on purpose: OBS already has this exact
+	 * effect's "Draw" technique/pass active for the whole duration of a
+	 * (non-OBS_SOURCE_CUSTOM_DRAW) source's video_render callback - the
+	 * same reason a plain obs_source_draw() call works with no loop of
+	 * its own. Wrapping this in a second gs_effect_loop nests a technique
+	 * pass inside an already-active one on the same effect object, which
+	 * doesn't error but simply never iterates - so the draw call below
+	 * silently never runs. That was the actual cause of the noteskin
+	 * being fully invisible: has_custom_skin correctly hid the flat
+	 * fallback box, and then nothing replaced it. */
+	gs_matrix_push();
+	/* Pivot around the visible rect's center so a 90 deg turn (for
+	 * rotated frames) lands the content back in the same place
+	 * instead of spinning it off to a corner. */
+	gs_matrix_translate3f(vis_dst_x + vis_dst_w * 0.5f, vis_dst_y + vis_dst_h * 0.5f, 0.0f);
+	if (src->rotated) {
+		gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, -1.57079632679f /* -90 deg */);
+		gs_matrix_scale3f(vis_dst_h / (float)src->w, vis_dst_w / (float)src->h, 1.0f);
+	} else {
+		gs_matrix_scale3f(vis_dst_w / (float)src->w, vis_dst_h / (float)src->h, 1.0f);
 	}
+	gs_matrix_translate3f(-(float)src->w * 0.5f, -(float)src->h * 0.5f, 0.0f);
+	gs_draw_sprite_subregion(tex, 0, (uint32_t)src->x, (uint32_t)src->y, (uint32_t)src->w, (uint32_t)src->h);
+	gs_matrix_pop();
 
 	gs_blend_state_pop();
 }
