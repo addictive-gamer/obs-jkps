@@ -47,6 +47,19 @@ void jkps_render_measure(const struct jkps_render_params *p, uint32_t *out_width
 		keys_h = p->key_size;
 	}
 
+	/* If the press bar is configured wider than the key box, it overhangs
+	 * past the first/last key's outer edge (it's centered against the
+	 * key). Widen the canvas along that same axis so it isn't clipped;
+	 * jkps_render_get_key_positions/render_frame shift the keys inward
+	 * by half of this to keep them centered in the extra room. */
+	int perp_extra = 0;
+	if (p->show_press_trail && p->press_bar_width > p->key_size)
+		perp_extra = p->press_bar_width - p->key_size;
+	if (p->vertical_layout)
+		keys_h += perp_extra;
+	else
+		keys_w += perp_extra;
+
 	int trail_w = 0, trail_h = 0;
 	if (p->show_press_trail) {
 		int trail_extent = p->press_bar_max_height;
@@ -86,12 +99,17 @@ void jkps_render_get_key_positions(const struct jkps_render_params *p, int out_x
 	int n = p->num_keys > 0 ? p->num_keys : 0;
 	int trail_y_shift = (p->show_press_trail && !p->vertical_layout) ? p->press_bar_max_height : 0;
 
+	int perp_extra = 0;
+	if (p->show_press_trail && p->press_bar_width > p->key_size)
+		perp_extra = p->press_bar_width - p->key_size;
+	int perp_shift = perp_extra / 2;
+
 	for (int i = 0; i < n; i++) {
 		if (p->vertical_layout) {
 			out_x[i] = CANVAS_PADDING;
-			out_y[i] = CANVAS_PADDING + i * (p->key_size + p->key_spacing);
+			out_y[i] = CANVAS_PADDING + perp_shift + i * (p->key_size + p->key_spacing);
 		} else {
-			out_x[i] = CANVAS_PADDING + i * (p->key_size + p->key_spacing);
+			out_x[i] = CANVAS_PADDING + perp_shift + i * (p->key_size + p->key_spacing);
 			out_y[i] = CANVAS_PADDING + trail_y_shift;
 		}
 	}
@@ -293,17 +311,24 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 	int n = p->num_keys > 0 ? p->num_keys : 0;
 	int trail_y_shift = (p->show_press_trail && !p->vertical_layout) ? p->press_bar_max_height : 0;
 
+	int perp_extra = 0;
+	if (p->show_press_trail && p->press_bar_width > p->key_size)
+		perp_extra = p->press_bar_width - p->key_size;
+	int perp_shift = perp_extra / 2;
+
 	for (int i = 0; i < n; i++) {
 		int x, y;
 		if (p->vertical_layout) {
 			x = CANVAS_PADDING;
-			y = CANVAS_PADDING + i * (p->key_size + p->key_spacing);
+			y = CANVAS_PADDING + perp_shift + i * (p->key_size + p->key_spacing);
 		} else {
-			x = CANVAS_PADDING + i * (p->key_size + p->key_spacing);
+			x = CANVAS_PADDING + perp_shift + i * (p->key_size + p->key_spacing);
 			y = CANVAS_PADDING + trail_y_shift;
 		}
 
 		if (p->show_press_trail) {
+			int thickness = p->press_bar_width > 0 ? p->press_bar_width : p->key_size;
+
 			int bar_len = (int)(p->keys[i].press_bar_px + 0.5f);
 			if (bar_len > 0) {
 				if (bar_len > p->press_bar_max_height)
@@ -313,15 +338,20 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 				 * from it - upward for a horizontal row of keys,
 				 * rightward for a vertical column - matching how a
 				 * key-press-visualization meter reads regardless of
-				 * layout. */
+				 * layout. Its perpendicular thickness may differ from
+				 * key_size, so it's centered against the key on that
+				 * axis instead of assumed flush with it. */
 				int bar_x = x, bar_y = y;
-				if (p->vertical_layout)
+				if (p->vertical_layout) {
 					bar_x += p->key_size; /* grows rightward, flush against the key */
-				else
+					bar_y += (p->key_size - thickness) / 2;
+				} else {
 					bar_y -= bar_len; /* grows upward, flush against the key */
+					bar_x += (p->key_size - thickness) / 2;
+				}
 
-				int bar_w = p->vertical_layout ? bar_len : p->key_size;
-				int bar_h = p->vertical_layout ? p->key_size : bar_len;
+				int bar_w = p->vertical_layout ? bar_len : thickness;
+				int bar_h = p->vertical_layout ? thickness : bar_len;
 
 				if (!p->keys[i].use_custom_hold_bar)
 					fill_rounded_rect(pixels, width, height, bar_x, bar_y, bar_w, bar_h,
@@ -336,13 +366,16 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 				int fdrift = (int)(p->keys[i].float_bar_drift + 0.5f);
 
 				int fx = x, fy = y;
-				if (p->vertical_layout)
+				if (p->vertical_layout) {
 					fx += p->key_size + fdrift;
-				else
+					fy += (p->key_size - thickness) / 2;
+				} else {
 					fy -= fdrift + flen;
+					fx += (p->key_size - thickness) / 2;
+				}
 
-				int fw = p->vertical_layout ? flen : p->key_size;
-				int fh = p->vertical_layout ? p->key_size : flen;
+				int fw = p->vertical_layout ? flen : thickness;
+				int fh = p->vertical_layout ? thickness : flen;
 
 				uint32_t base = p->trail_color;
 				uint8_t base_a = (uint8_t)((base >> 24) & 0xFF);

@@ -70,6 +70,7 @@ struct jkps_source_context {
 	bool show_key_labels;
 	uint32_t trail_color;
 	int press_bar_max_height;
+	int press_bar_width;      /* perpendicular thickness, px; 0 = match key_size */
 	int press_bar_rise_speed; /* 1..100, % of remaining distance closed per tick (~30/s) */
 	bool bars_mode;
 	bool show_kps_graph;
@@ -225,6 +226,7 @@ static void rebuild_canvas(struct jkps_source_context *ctx)
 	p.corner_radius = ctx->corner_radius;
 	p.show_press_trail = ctx->show_press_trail;
 	p.press_bar_max_height = ctx->press_bar_max_height;
+	p.press_bar_width = ctx->press_bar_width;
 	p.show_kps_graph = ctx->show_kps_graph;
 	p.show_kps = ctx->show_kps;
 	p.show_total = ctx->show_total;
@@ -339,6 +341,7 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 	ctx->show_key_labels = obs_data_get_bool(settings, "show_key_labels");
 	ctx->trail_color = (uint32_t)obs_data_get_int(settings, "trail_color");
 	ctx->press_bar_max_height = (int)obs_data_get_int(settings, "press_bar_max_height");
+	ctx->press_bar_width = (int)obs_data_get_int(settings, "press_bar_width");
 	ctx->press_bar_rise_speed = (int)obs_data_get_int(settings, "press_bar_rise_speed");
 	ctx->bars_mode = obs_data_get_bool(settings, "bars_mode");
 	ctx->show_kps_graph = obs_data_get_bool(settings, "show_kps_graph");
@@ -391,6 +394,7 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, "show_key_labels", true);
 	obs_data_set_default_int(settings, "trail_color", 0xFFFFFFFF);
 	obs_data_set_default_int(settings, "press_bar_max_height", 200);
+	obs_data_set_default_int(settings, "press_bar_width", 0);
 	obs_data_set_default_int(settings, "press_bar_rise_speed", 15);
 	obs_data_set_default_bool(settings, "bars_mode", false);
 	obs_data_set_default_bool(settings, "show_kps_graph", false);
@@ -786,6 +790,7 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_properties_add_color_alpha(props, "trail_color", obs_module_text("JkpsSource.TrailColor"));
 	obs_properties_add_int(props, "press_bar_max_height", obs_module_text("JkpsSource.PressBarMaxHeight"), 10, 2000,
 			       1);
+	obs_properties_add_int(props, "press_bar_width", obs_module_text("JkpsSource.PressBarWidth"), 0, 300, 1);
 	obs_properties_add_int(props, "press_bar_rise_speed", obs_module_text("JkpsSource.PressBarRiseSpeed"), 1, 100,
 			       1);
 	obs_properties_add_bool(props, "bars_mode", obs_module_text("JkpsSource.BarsMode"));
@@ -955,6 +960,7 @@ static void jkps_source_video_tick(void *data, float seconds)
 	p.corner_radius = ctx->corner_radius;
 	p.show_press_trail = ctx->show_press_trail;
 	p.press_bar_max_height = ctx->press_bar_max_height;
+	p.press_bar_width = ctx->press_bar_width;
 	p.show_key_labels = ctx->show_key_labels;
 	p.trail_color = ctx->trail_color;
 	p.bars_mode = ctx->bars_mode;
@@ -1184,18 +1190,23 @@ static void jkps_source_video_render(void *data, gs_effect_t *effect)
 			const struct jkps_atlas_rect *piece = &active_skin->hold_piece[dir];
 			const struct jkps_atlas_rect *end = &active_skin->hold_end[dir];
 			if (piece->valid || end->valid) {
+				int thickness = ctx->press_bar_width > 0 ? ctx->press_bar_width : ctx->key_size;
+
 				int bar_len = (int)(ctx->press_bar_px[i] + 0.5f);
 				if (bar_len > ctx->press_bar_max_height)
 					bar_len = ctx->press_bar_max_height;
 				if (bar_len > 0) {
 					int bar_x = ctx->key_screen_x[i], bar_y = ctx->key_screen_y[i];
-					if (ctx->vertical_layout)
+					if (ctx->vertical_layout) {
 						bar_x += ctx->key_size;
-					else
+						bar_y += (ctx->key_size - thickness) / 2;
+					} else {
 						bar_y -= bar_len;
+						bar_x += (ctx->key_size - thickness) / 2;
+					}
 
-					int bar_w = ctx->vertical_layout ? bar_len : ctx->key_size;
-					int bar_h = ctx->vertical_layout ? ctx->key_size : bar_len;
+					int bar_w = ctx->vertical_layout ? bar_len : thickness;
+					int bar_h = ctx->vertical_layout ? thickness : bar_len;
 
 					jkps_draw_hold_bar(active_skin->atlas_img.texture, bar_x, bar_y, bar_w, bar_h,
 							   !ctx->vertical_layout, piece, end);

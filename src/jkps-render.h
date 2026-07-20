@@ -76,12 +76,13 @@ struct jkps_render_params {
 	int key_size;
 	int key_spacing;
 	int key_font_size;
-	int corner_radius; /* 0 = square corners; up to key_size/2 for a pill/circle look */
+	int corner_radius;     /* 0 = square corners; up to key_size/2 for a pill/circle look */
 	bool show_press_trail; /* show the growing/shrinking press bar above each key */
 	bool show_key_labels;
-	uint32_t trail_color; /* press bar color */
+	uint32_t trail_color;     /* press bar color */
 	int press_bar_max_height; /* px cap on how far the press bar can grow */
-	bool bars_mode; /* draw thin equalizer-style bars instead of square boxes */
+	int press_bar_width;      /* perpendicular thickness of the press bar, px; 0 = match key_size */
+	bool bars_mode;           /* draw thin equalizer-style bars instead of square boxes */
 
 	bool show_kps_graph;
 	uint32_t kps_graph_color;
