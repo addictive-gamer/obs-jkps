@@ -118,20 +118,38 @@ static bool find_attr_int(const char *tag, const char *attr, int *out)
 	return true;
 }
 
+/* Sparrow's "rotated" attribute is a bare boolean string ("true"/"false");
+ * absent entirely on the vast majority of frames, which is not rotated. */
+static bool find_attr_bool(const char *tag, const char *attr, bool *out)
+{
+	char buf[32];
+	if (!find_attr_str(tag, attr, buf, sizeof(buf))) {
+		*out = false;
+		return false;
+	}
+	*out = (strcmp(buf, "true") == 0);
+	return true;
+}
+
 /* Classifies a <SubTexture name="..."> into one of the 4 arrow lanes and
  * one of the 3 states, the same way Psych Engine (and every noteskin pack
  * built for it) names frames: "left"/"down"/"up"/"right" for the lane, plus
  * "press"/"confirm" for the state (no suffix = static/idle). Frames that
  * don't match a lane (rating sprites, combo numbers, etc.) are ignored. */
-static bool classify_frame(const char *raw_name, enum jkps_noteskin_dir *dir, enum jkps_noteskin_state *state)
+static void lower_copy(const char *raw_name, char *lower, size_t lower_size)
 {
-	char lower[JKPS_NOTESKIN_NAME_LEN];
 	size_t n = strlen(raw_name);
-	if (n >= sizeof(lower))
-		n = sizeof(lower) - 1;
+	if (n >= lower_size)
+		n = lower_size - 1;
 	for (size_t i = 0; i < n; i++)
 		lower[i] = (char)tolower((unsigned char)raw_name[i]);
 	lower[n] = '\0';
+}
+
+static bool classify_frame(const char *raw_name, enum jkps_noteskin_dir *dir, enum jkps_noteskin_state *state)
+{
+	char lower[JKPS_NOTESKIN_NAME_LEN];
+	lower_copy(raw_name, lower, sizeof(lower));
 
 	if (strstr(lower, "left"))
 		*dir = JKPS_DIR_LEFT;
@@ -152,6 +170,59 @@ static bool classify_frame(const char *raw_name, enum jkps_noteskin_dir *dir, en
 		*state = JKPS_SKIN_STATIC;
 
 	return true;
+}
+
+/* FNF's sustain/hold-note art is named by lane *color*, not direction (e.g.
+ * "purple hold piece0000", "blue hold end0000"), using the game's standard
+ * color->lane mapping: purple=LEFT, blue=DOWN, green=UP, red=RIGHT. Word
+ * order and spelling drift between packs ("hold end" vs "end hold", and
+ * even "pruple" typos), so this only checks independent substrings rather
+ * than one fixed phrase. */
+static bool classify_hold_frame(const char *raw_name, enum jkps_noteskin_dir *dir, bool *is_end)
+{
+	char lower[JKPS_NOTESKIN_NAME_LEN];
+	lower_copy(raw_name, lower, sizeof(lower));
+
+	if (!strstr(lower, "hold"))
+		return false;
+
+	if (strstr(lower, "purple") || strstr(lower, "pruple"))
+		*dir = JKPS_DIR_LEFT;
+	else if (strstr(lower, "blue"))
+		*dir = JKPS_DIR_DOWN;
+	else if (strstr(lower, "green"))
+		*dir = JKPS_DIR_UP;
+	else if (strstr(lower, "red"))
+		*dir = JKPS_DIR_RIGHT;
+	else
+		return false;
+
+	*is_end = strstr(lower, "end") != NULL;
+	return true;
+}
+
+/* Shared fill for one <SubTexture> match: the pixel rect plus the
+ * rotated/trim attributes every frame kind (arrow or hold) needs read the
+ * same way. */
+static void fill_atlas_rect(struct jkps_atlas_rect *r, const char *tag, int x, int y, int w, int h)
+{
+	r->x = x;
+	r->y = y;
+	r->w = w;
+	r->h = h;
+
+	find_attr_bool(tag, "rotated", &r->rotated);
+
+	if (!find_attr_int(tag, "frameX", &r->frame_x))
+		r->frame_x = 0;
+	if (!find_attr_int(tag, "frameY", &r->frame_y))
+		r->frame_y = 0;
+	if (!find_attr_int(tag, "frameWidth", &r->frame_w))
+		r->frame_w = r->rotated ? h : w;
+	if (!find_attr_int(tag, "frameHeight", &r->frame_h))
+		r->frame_h = r->rotated ? w : h;
+
+	r->valid = true;
 }
 
 /* ---- atlas loading --------------------------------------------------- */
@@ -188,17 +259,27 @@ bool jkps_noteskin_load(const char *xml_path, struct jkps_noteskin *out)
 		    find_attr_int(tag, "height", &h) && w > 0 && h > 0) {
 			enum jkps_noteskin_dir dir;
 			enum jkps_noteskin_state state;
-			if (classify_frame(name, &dir, &state)) {
+			bool is_hold_end;
+			/* Hold-frame check goes first: it requires the much more
+			 * specific "hold" substring, whereas the arrow classifier's
+			 * bare direction-word substrings ("up", "left"...) can
+			 * accidentally match inside unrelated words - e.g. the
+			 * common "purple" -> "pruple" typo contains "up". */
+			if (classify_hold_frame(name, &dir, &is_hold_end)) {
+				/* Optional sustain-bar art; doesn't count toward
+				 * `found` since a pack is still perfectly usable
+				 * without it (the plain press-bar color is the
+				 * fallback). */
+				struct jkps_atlas_rect *r = is_hold_end ? &out->hold_end[dir] : &out->hold_piece[dir];
+				if (!r->valid)
+					fill_atlas_rect(r, tag, x, y, w, h);
+			} else if (classify_frame(name, &dir, &state)) {
 				struct jkps_atlas_rect *r = &out->frames[dir][state];
 				/* First match wins: packs list animation frames in
 				 * ascending order (0000, 0001, ...), and a static
 				 * overlay only ever needs the first one. */
 				if (!r->valid) {
-					r->x = x;
-					r->y = y;
-					r->w = w;
-					r->h = h;
-					r->valid = true;
+					fill_atlas_rect(r, tag, x, y, w, h);
 					found++;
 				}
 			}

@@ -49,7 +49,7 @@ void jkps_render_measure(const struct jkps_render_params *p, uint32_t *out_width
 
 	int trail_w = 0, trail_h = 0;
 	if (p->show_press_trail) {
-		int trail_extent = JKPS_TRAIL_SEGMENTS * (p->key_size + p->key_spacing);
+		int trail_extent = p->press_bar_max_height;
 		if (p->vertical_layout)
 			trail_w = trail_extent;
 		else
@@ -84,8 +84,7 @@ void jkps_render_measure(const struct jkps_render_params *p, uint32_t *out_width
 void jkps_render_get_key_positions(const struct jkps_render_params *p, int out_x[], int out_y[])
 {
 	int n = p->num_keys > 0 ? p->num_keys : 0;
-	int trail_y_shift =
-		(p->show_press_trail && !p->vertical_layout) ? JKPS_TRAIL_SEGMENTS * (p->key_size + p->key_spacing) : 0;
+	int trail_y_shift = (p->show_press_trail && !p->vertical_layout) ? p->press_bar_max_height : 0;
 
 	for (int i = 0; i < n; i++) {
 		if (p->vertical_layout) {
@@ -292,8 +291,7 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 	fill_rect(pixels, width, height, 0, 0, (int)width, (int)height, p->color_bg);
 
 	int n = p->num_keys > 0 ? p->num_keys : 0;
-	int trail_y_shift =
-		(p->show_press_trail && !p->vertical_layout) ? JKPS_TRAIL_SEGMENTS * (p->key_size + p->key_spacing) : 0;
+	int trail_y_shift = (p->show_press_trail && !p->vertical_layout) ? p->press_bar_max_height : 0;
 
 	for (int i = 0; i < n; i++) {
 		int x, y;
@@ -306,42 +304,39 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 		}
 
 		if (p->show_press_trail) {
-			for (int s = 0; s < JKPS_TRAIL_SEGMENTS; s++) {
-				float intensity = p->keys[i].trail[s];
-				if (intensity <= 0.01f)
-					continue;
+			int bar_len = (int)(p->keys[i].press_bar_px + 0.5f);
+			if (bar_len > 0) {
+				if (bar_len > p->press_bar_max_height)
+					bar_len = p->press_bar_max_height;
 
-				/* Taper the far end of the trail smoothly instead of
-				 * letting it pop out of existence at the last segment. */
-				float tip_fade = (float)(JKPS_TRAIL_SEGMENTS - s) / (float)JKPS_TRAIL_SEGMENTS;
-				intensity *= tip_fade;
-				if (intensity <= 0.01f)
-					continue;
-
-				int seg_x = x, seg_y = y;
-				int offset = (s + 1) * (p->key_size + p->key_spacing);
+				/* The bar is anchored at the key box and grows away
+				 * from it - upward for a horizontal row of keys,
+				 * rightward for a vertical column - matching how a
+				 * key-press-visualization meter reads regardless of
+				 * layout. */
+				int bar_x = x, bar_y = y;
 				if (p->vertical_layout)
-					seg_x += offset; /* trail extends rightward per row */
+					bar_x += p->key_size; /* grows rightward, flush against the key */
 				else
-					seg_y -= offset; /* trail extends upward per column */
+					bar_y -= bar_len; /* grows upward, flush against the key */
 
-				uint32_t base = p->trail_color;
-				uint8_t base_a = (uint8_t)((base >> 24) & 0xFF);
-				uint8_t seg_a = (uint8_t)(base_a * intensity);
-				uint32_t seg_color = (base & 0x00FFFFFFu) | ((uint32_t)seg_a << 24);
-				fill_rounded_rect(pixels, width, height, seg_x, seg_y, p->key_size, p->key_size,
-						  seg_color, p->corner_radius);
+				int bar_w = p->vertical_layout ? bar_len : p->key_size;
+				int bar_h = p->vertical_layout ? p->key_size : bar_len;
+
+				if (!p->keys[i].use_custom_hold_bar)
+					fill_rounded_rect(pixels, width, height, bar_x, bar_y, bar_w, bar_h,
+							  p->trail_color, p->corner_radius);
 			}
 		}
 
 		uint32_t box_color = p->keys[i].down ? p->keys[i].color_pressed : p->keys[i].color_idle;
 		if (!p->keys[i].has_custom_skin) {
 			if (p->bars_mode) {
-				/* trail[0] is always maintained (decays on release,
+				/* press_level is always maintained (decays on release,
 				 * jumps to 1.0 on press) regardless of whether the
 				 * multi-segment trail visual is enabled, so it
 				 * doubles nicely as a VU-meter-style fill level. */
-				float fill_frac = p->keys[i].trail[0];
+				float fill_frac = p->keys[i].press_level;
 				if (fill_frac < 0.06f)
 					fill_frac = p->keys[i].down ? 1.0f : 0.06f;
 				if (fill_frac > 1.0f)
@@ -351,15 +346,17 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 				if (bar_h < 4)
 					bar_h = 4;
 				int bar_y = y + (p->key_size - bar_h) / 2;
-				int fill_w = (int)(p->key_size * fill_frac);
-				if (fill_w < 2)
-					fill_w = 2;
+				int fill_h = (int)(bar_h * fill_frac);
+				if (fill_h < 2)
+					fill_h = 2;
 
-				/* Dim background track, then the active fill anchored
-				 * to the left so it reads like a horizontal level meter. */
+				/* Dim background track spans the full key width, so
+				 * it always reads as a horizontal strip; the active
+				 * fill grows downward from its top edge instead of
+				 * sideways, like a level meter filling from above. */
 				fill_rounded_rect(pixels, width, height, x, bar_y, p->key_size, bar_h,
 						  p->keys[i].color_idle, p->corner_radius);
-				fill_rounded_rect(pixels, width, height, x, bar_y, fill_w, bar_h,
+				fill_rounded_rect(pixels, width, height, x, bar_y, p->key_size, fill_h,
 						  p->keys[i].color_pressed, p->corner_radius);
 			} else {
 				fill_rounded_rect(pixels, width, height, x, y, p->key_size, p->key_size, box_color,

@@ -29,9 +29,9 @@ extern "C" {
 /* obs-jkps reads (never ships) Sparrow/TexturePacker atlas noteskins - the
  * same "one PNG + one XML" format Psych Engine and most modern FNF engines
  * use for arrow noteskins. This module only understands the format; it
- * contains no game or fan art. "Funkin' Skins" and "Local Skins" are both
- * empty by default and only ever show packs the user points the plugin at
- * on their own disk. See NOTICE.md. */
+ * contains no game or fan art. "Funkin' Skins" is empty by default and only
+ * ever shows packs the user points the plugin at on their own disk. See
+ * NOTICE.md. */
 
 /* Lane order matches the plugin's default D F J K layout, left to right.
  * Atlas-format noteskins are inherently 4-directional, so this is fixed
@@ -53,14 +53,35 @@ enum jkps_noteskin_state {
 };
 
 struct jkps_atlas_rect {
-	int x, y, w, h;
+	int x, y, w, h; /* pixel rect actually stored in the atlas PNG */
 	bool valid;
+
+	/* Sparrow/TexturePacker atlases (the format Psych Engine and most FNF
+	 * engines export, including via Free Texture Packer's "Starling"
+	 * preset) commonly pack frames with rotation and/or trimming enabled
+	 * to save space - both of which a naive x/y/width/height-only reader
+	 * silently gets wrong, which is the usual reason a real-world pack
+	 * "loads" (found > 0) but still doesn't look right or draws nothing
+	 * useful. */
+	bool rotated;      /* true if this frame is stored rotated 90 deg in the atlas */
+	int frame_x, frame_y;   /* trim offset within the untrimmed logical frame */
+	int frame_w, frame_h;   /* untrimmed logical frame size (>= w/h); equals w/h if untrimmed */
 };
 
 struct jkps_noteskin {
 	gs_image_file_t atlas_img;
 	bool atlas_loaded;
 	struct jkps_atlas_rect frames[JKPS_DIR_COUNT][JKPS_SKIN_STATE_COUNT];
+
+	/* FNF's "hold"/sustain-note trail graphics, keyed by lane color
+	 * (purple/blue/green/red - the same color->lane mapping as the game
+	 * itself: purple=LEFT, blue=DOWN, green=UP, red=RIGHT), so a Funkin'
+	 * Skin's press bar can be drawn with the pack's own tileable "hold
+	 * piece" + capping "hold end" art instead of a plain colored rect.
+	 * Optional: .valid stays false when a pack doesn't include them. */
+	struct jkps_atlas_rect hold_piece[JKPS_DIR_COUNT];
+	struct jkps_atlas_rect hold_end[JKPS_DIR_COUNT];
+
 	char source_xml_path[512];
 };
 

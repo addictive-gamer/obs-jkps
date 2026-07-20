@@ -38,18 +38,14 @@ static const bool default_enabled[JKPS_MAX_KEYS] = {true, true, true, true, fals
 #define TEXTURE_UPDATE_INTERVAL_MS 33 /* ~30 Hz refresh for the GDI-rendered texture */
 
 /* Native Skins are the procedural color themes above (jkps_themes) and work
- * at any key count. Funkin' Skins and Local Skins both load a real
- * Sparrow/TexturePacker atlas (see jkps-noteskin.h) from a folder the user
- * points the plugin at; both start out empty since obs-jkps ships with no
- * fan art of its own. They're kept as two separate slots - "Funkin' Skins"
- * for the user's main noteskin folder, "Local Skins" as a second, separate
- * spot for anything extra - purely for the user's own organization; the
- * loading/rendering logic is identical for both. Atlas noteskins are
- * inherently 4-directional, so either one locks the layout to 4K. */
+ * at any key count. Funkin' Skins load a real Sparrow/TexturePacker atlas
+ * (see jkps-noteskin.h) from a folder the user points the plugin at; it
+ * starts out empty since obs-jkps ships with no fan art of its own. Atlas
+ * noteskins are inherently 4-directional, so picking one locks the layout
+ * to 4K. */
 enum jkps_skin_category {
 	JKPS_SKIN_CAT_NATIVE = 0,
 	JKPS_SKIN_CAT_FUNKIN = 1,
-	JKPS_SKIN_CAT_LOCAL = 2,
 };
 
 /* FNF's standard lane order (left, down, up, right) mapped onto the
@@ -73,11 +69,13 @@ struct jkps_source_context {
 	bool show_press_trail;
 	bool show_key_labels;
 	uint32_t trail_color;
+	int press_bar_max_height;
 	bool bars_mode;
 	bool show_kps_graph;
 	uint32_t kps_graph_color;
 	float kps_history[JKPS_KPS_GRAPH_SAMPLES];
-	float trail[JKPS_MAX_KEYS][JKPS_TRAIL_SEGMENTS];
+	float press_level[JKPS_MAX_KEYS];  /* 0..1, drives bars-mode VU fill */
+	float press_bar_px[JKPS_MAX_KEYS]; /* current press-bar height in px */
 
 	uint32_t key_color_idle[JKPS_MAX_KEYS];
 	uint32_t key_color_pressed[JKPS_MAX_KEYS];
@@ -95,9 +93,8 @@ struct jkps_source_context {
 	int key_screen_x[JKPS_MAX_KEYS];
 	int key_screen_y[JKPS_MAX_KEYS];
 
-	/* Atlas-format noteskins (Funkin' Skins / Local Skins). Only one can
-	 * be active at a time, selected by skin_category; both are loaded
-	 * independently so switching between them doesn't require a reload. */
+	/* Atlas-format noteskin (Funkin' Skins), active only when
+	 * skin_category selects it. */
 	bool custom_skins_enabled;
 	enum jkps_skin_category skin_category;
 
@@ -105,11 +102,6 @@ struct jkps_source_context {
 	char funkin_skin_xml[512];
 	struct jkps_noteskin funkin_noteskin;
 	bool funkin_noteskin_loaded;
-
-	char local_folder[512];
-	char local_skin_xml[512];
-	struct jkps_noteskin local_noteskin;
-	bool local_noteskin_loaded;
 
 	uint32_t color_text;
 	uint32_t color_bg;
@@ -202,8 +194,6 @@ static struct jkps_noteskin *jkps_active_noteskin(struct jkps_source_context *ct
 {
 	if (ctx->skin_category == JKPS_SKIN_CAT_FUNKIN && ctx->funkin_noteskin_loaded)
 		return &ctx->funkin_noteskin;
-	if (ctx->skin_category == JKPS_SKIN_CAT_LOCAL && ctx->local_noteskin_loaded)
-		return &ctx->local_noteskin;
 	return NULL;
 }
 
@@ -229,6 +219,7 @@ static void rebuild_canvas(struct jkps_source_context *ctx)
 	p.key_font_size = ctx->key_font_size;
 	p.corner_radius = ctx->corner_radius;
 	p.show_press_trail = ctx->show_press_trail;
+	p.press_bar_max_height = ctx->press_bar_max_height;
 	p.show_kps_graph = ctx->show_kps_graph;
 	p.show_kps = ctx->show_kps;
 	p.show_total = ctx->show_total;
@@ -321,16 +312,10 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 
 	jkps_load_noteskin(&ctx->funkin_noteskin, &ctx->funkin_noteskin_loaded, ctx->funkin_skin_xml,
 			   sizeof(ctx->funkin_skin_xml), obs_data_get_string(settings, "funkin_skin_xml"));
-	jkps_load_noteskin(&ctx->local_noteskin, &ctx->local_noteskin_loaded, ctx->local_skin_xml,
-			   sizeof(ctx->local_skin_xml), obs_data_get_string(settings, "local_skin_xml"));
 
 	const char *funkin_folder = obs_data_get_string(settings, "funkin_folder");
 	strncpy(ctx->funkin_folder, funkin_folder, sizeof(ctx->funkin_folder) - 1);
 	ctx->funkin_folder[sizeof(ctx->funkin_folder) - 1] = '\0';
-
-	const char *local_folder = obs_data_get_string(settings, "local_folder");
-	strncpy(ctx->local_folder, local_folder, sizeof(ctx->local_folder) - 1);
-	ctx->local_folder[sizeof(ctx->local_folder) - 1] = '\0';
 
 	/* Atlas noteskins are inherently 4-directional (left/down/up/right),
 	 * so picking one locks the layout to the first 4 key slots - Native
@@ -348,6 +333,7 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 	ctx->show_press_trail = obs_data_get_bool(settings, "show_press_trail");
 	ctx->show_key_labels = obs_data_get_bool(settings, "show_key_labels");
 	ctx->trail_color = (uint32_t)obs_data_get_int(settings, "trail_color");
+	ctx->press_bar_max_height = (int)obs_data_get_int(settings, "press_bar_max_height");
 	ctx->bars_mode = obs_data_get_bool(settings, "bars_mode");
 	ctx->show_kps_graph = obs_data_get_bool(settings, "show_kps_graph");
 	ctx->kps_graph_color = (uint32_t)obs_data_get_int(settings, "kps_graph_color");
@@ -398,6 +384,7 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, "show_press_trail", false);
 	obs_data_set_default_bool(settings, "show_key_labels", true);
 	obs_data_set_default_int(settings, "trail_color", 0xFFFFFFFF);
+	obs_data_set_default_int(settings, "press_bar_max_height", 200);
 	obs_data_set_default_bool(settings, "bars_mode", false);
 	obs_data_set_default_bool(settings, "show_kps_graph", false);
 	obs_data_set_default_int(settings, "kps_graph_color", 0xFF37B2FF);
@@ -416,10 +403,9 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	 * "not configured yet" for a first-time user. */
 	obs_data_set_default_bool(settings, "custom_skins_enabled", false);
 	obs_data_set_default_int(settings, "skin_category", JKPS_SKIN_CAT_NATIVE);
+	obs_data_set_default_int(settings, "native_theme", 0); /* jkps_themes[0] == Classic */
 	obs_data_set_default_string(settings, "funkin_folder", "");
 	obs_data_set_default_string(settings, "funkin_skin_xml", "");
-	obs_data_set_default_string(settings, "local_folder", "");
-	obs_data_set_default_string(settings, "local_skin_xml", "");
 	obs_data_set_default_string(settings, "noteskins_info", obs_module_text("JkpsSource.NoteskinsInfo"));
 }
 
@@ -597,10 +583,20 @@ static const struct jkps_theme jkps_themes[] = {
 };
 #define JKPS_THEME_COUNT (sizeof(jkps_themes) / sizeof(jkps_themes[0]))
 
-static bool jkps_apply_theme(struct jkps_source_context *ctx, const struct jkps_theme *theme)
+static bool jkps_theme_list_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
 {
-	obs_data_t *settings = obs_source_get_settings(ctx->source);
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(property);
 
+	long long idx = obs_data_get_int(settings, "native_theme");
+	if (idx < 0 || (size_t)idx >= JKPS_THEME_COUNT)
+		return false;
+
+	/* Only the theme picker's own value changed here - the rest of the
+	 * theme's settings (colors, corner radius, bars mode) still need to
+	 * be pushed into `settings` so the properties dialog reflects them,
+	 * same as the old per-theme buttons did. */
+	const struct jkps_theme *theme = &jkps_themes[idx];
 	char key[32];
 	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
 		size_t slot = (size_t)i % theme->key_color_count;
@@ -619,25 +615,7 @@ static bool jkps_apply_theme(struct jkps_source_context *ctx, const struct jkps_
 	obs_data_set_int(settings, "corner_radius", theme->corner_radius);
 	obs_data_set_bool(settings, "bars_mode", theme->bars_mode);
 
-	obs_source_update(ctx->source, settings);
-	obs_data_release(settings);
-
-	/* Return true so the properties dialog re-reads and displays the new
-	 * values (color pickers, slider) instead of showing stale ones. */
 	return true;
-}
-
-static bool jkps_theme_button_clicked(obs_properties_t *props, obs_property_t *property, void *data)
-{
-	UNUSED_PARAMETER(props);
-	struct jkps_source_context *ctx = data;
-	const char *name = obs_property_name(property);
-
-	for (size_t i = 0; i < JKPS_THEME_COUNT; i++) {
-		if (strcmp(name, jkps_themes[i].id) == 0)
-			return jkps_apply_theme(ctx, &jkps_themes[i]);
-	}
-	return false;
 }
 
 /* (Re)fills a skin-name dropdown by scanning `folder` for packs. Always
@@ -664,14 +642,6 @@ static bool jkps_funkin_folder_modified(obs_properties_t *props, obs_property_t 
 	return true;
 }
 
-static bool jkps_local_folder_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
-{
-	UNUSED_PARAMETER(property);
-	jkps_populate_skin_list(obs_properties_get(props, "local_skin_xml"),
-				obs_data_get_string(settings, "local_folder"));
-	return true;
-}
-
 /* Shared modified-callback for both "custom_skins_enabled" and
  * "skin_category": shows/hides the folder+skin pickers for whichever
  * category is active, and hides key slots 5-8 while an atlas skin is
@@ -686,13 +656,10 @@ static bool jkps_skin_controls_modified(obs_properties_t *props, obs_property_t 
 	obs_property_set_visible(obs_properties_get(props, "noteskins_info"), enabled);
 
 	bool show_funkin = enabled && category == JKPS_SKIN_CAT_FUNKIN;
-	bool show_local = enabled && category == JKPS_SKIN_CAT_LOCAL;
 	bool show_native = !enabled || category == JKPS_SKIN_CAT_NATIVE;
-	obs_property_set_visible(obs_properties_get(props, "themes_group"), show_native);
+	obs_property_set_visible(obs_properties_get(props, "native_theme"), show_native);
 	obs_property_set_visible(obs_properties_get(props, "funkin_folder"), show_funkin);
 	obs_property_set_visible(obs_properties_get(props, "funkin_skin_xml"), show_funkin);
-	obs_property_set_visible(obs_properties_get(props, "local_folder"), show_local);
-	obs_property_set_visible(obs_properties_get(props, "local_skin_xml"), show_local);
 
 	bool locked_to_4k = enabled && category != JKPS_SKIN_CAT_NATIVE;
 	for (int i = 4; i < JKPS_MAX_KEYS; i++) {
@@ -709,11 +676,11 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	struct jkps_source_context *ctx = data;
 	obs_properties_t *props = obs_properties_create();
 
-	/* Noteskins: Native Skins (the procedural themes above) vs real
-	 * atlas-format noteskins read from the user's own disk. Funkin'
-	 * Skins and Local Skins ship empty - obs-jkps never bundles any fan
-	 * or game art - and only show packs once the user points a folder
-	 * at their own. See NOTICE.md and jkps-noteskin.h. */
+	/* Noteskins: Native Skins (the procedural themes above) vs a real
+	 * atlas-format Funkin' noteskin read from the user's own disk.
+	 * Funkin' Skins ships empty - obs-jkps never bundles any fan or game
+	 * art - and only shows packs once the user points a folder at their
+	 * own. See NOTICE.md and jkps-noteskin.h. */
 	obs_properties_t *skins_group = obs_properties_create();
 
 	obs_property_t *enabled_prop = obs_properties_add_bool(skins_group, "custom_skins_enabled",
@@ -729,19 +696,17 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 							   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(cat_prop, obs_module_text("JkpsSource.SkinCategoryNative"), JKPS_SKIN_CAT_NATIVE);
 	obs_property_list_add_int(cat_prop, obs_module_text("JkpsSource.SkinCategoryFunkin"), JKPS_SKIN_CAT_FUNKIN);
-	obs_property_list_add_int(cat_prop, obs_module_text("JkpsSource.SkinCategoryLocal"), JKPS_SKIN_CAT_LOCAL);
 	obs_property_set_modified_callback(cat_prop, jkps_skin_controls_modified);
 
-	/* Native Skins: the procedural color-theme presets. Lives nested
-	 * here (instead of its own always-visible top-level group) so it
-	 * only shows up while "Native" is the active category. */
-	obs_properties_t *themes_group = obs_properties_create();
-	for (size_t i = 0; i < JKPS_THEME_COUNT; i++) {
-		obs_properties_add_button(themes_group, jkps_themes[i].id, obs_module_text(jkps_themes[i].locale_key),
-					  jkps_theme_button_clicked);
-	}
-	obs_properties_add_group(skins_group, "themes_group", obs_module_text("JkpsSource.Themes"), OBS_GROUP_NORMAL,
-				 themes_group);
+	/* Native Skins: the procedural color-theme presets, as a single
+	 * dropdown (instead of one button per theme) so it sits consistently
+	 * alongside every other "pick one" control in the panel. */
+	obs_property_t *theme_prop = obs_properties_add_list(skins_group, "native_theme",
+							     obs_module_text("JkpsSource.Themes"),
+							     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	for (size_t i = 0; i < JKPS_THEME_COUNT; i++)
+		obs_property_list_add_int(theme_prop, obs_module_text(jkps_themes[i].locale_key), (long long)i);
+	obs_property_set_modified_callback(theme_prop, jkps_theme_list_modified);
 
 	obs_property_t *funkin_folder_prop = obs_properties_add_path(skins_group, "funkin_folder",
 								     obs_module_text("JkpsSource.FunkinFolder"),
@@ -753,16 +718,6 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 								   obs_module_text("JkpsSource.FunkinSkin"),
 								   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	jkps_populate_skin_list(funkin_skin_prop, ctx ? ctx->funkin_folder : NULL);
-
-	obs_property_t *local_folder_prop = obs_properties_add_path(
-		skins_group, "local_folder", obs_module_text("JkpsSource.LocalFolder"), OBS_PATH_DIRECTORY, NULL, NULL);
-	obs_property_set_long_description(local_folder_prop, obs_module_text("JkpsSource.NoteskinsInfo"));
-	obs_property_set_modified_callback(local_folder_prop, jkps_local_folder_modified);
-
-	obs_property_t *local_skin_prop = obs_properties_add_list(skins_group, "local_skin_xml",
-								  obs_module_text("JkpsSource.LocalSkin"),
-								  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	jkps_populate_skin_list(local_skin_prop, ctx ? ctx->local_folder : NULL);
 
 	obs_properties_add_group(props, "skins_group", obs_module_text("JkpsSource.NoteskinsGroup"), OBS_GROUP_NORMAL,
 				 skins_group);
@@ -808,6 +763,8 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_properties_add_bool(props, "show_press_trail", obs_module_text("JkpsSource.ShowPressTrail"));
 	obs_properties_add_bool(props, "show_key_labels", obs_module_text("JkpsSource.ShowKeyLabels"));
 	obs_properties_add_color_alpha(props, "trail_color", obs_module_text("JkpsSource.TrailColor"));
+	obs_properties_add_int(props, "press_bar_max_height", obs_module_text("JkpsSource.PressBarMaxHeight"), 10, 2000,
+			       1);
 	obs_properties_add_bool(props, "bars_mode", obs_module_text("JkpsSource.BarsMode"));
 	obs_properties_add_bool(props, "show_kps_graph", obs_module_text("JkpsSource.ShowKpsGraph"));
 	obs_properties_add_color_alpha(props, "kps_graph_color", obs_module_text("JkpsSource.KpsGraphColor"));
@@ -858,8 +815,6 @@ static void jkps_source_destroy(void *data)
 	}
 	if (ctx->funkin_noteskin_loaded)
 		jkps_noteskin_free(&ctx->funkin_noteskin);
-	if (ctx->local_noteskin_loaded)
-		jkps_noteskin_free(&ctx->local_noteskin);
 	obs_leave_graphics();
 
 	free(ctx->pixel_buffer);
@@ -880,15 +835,26 @@ static void jkps_source_video_tick(void *data, float seconds)
 		return;
 	ctx->last_texture_update_ms = now_ms;
 
-	/* Shift each key's trail buffer outward one slot (like a conveyor
-	 * belt) and inject the current down state at the front. Segment 0
-	 * fades out gradually when the key is up, so a quick tap still
-	 * leaves a brief, natural-looking blip instead of vanishing on the
-	 * very next frame. */
+	/* press_level: instant jump on press, exponential decay on release -
+	 * still used as-is for the bars-mode VU-meter fill.
+	 * press_bar_px: eases toward press_bar_max_height while held (fast
+	 * rise) and eases back down to 0 on release (smooth retract), giving
+	 * a single solid bar that visibly grows/shrinks rather than a trail
+	 * of fading segments. */
 	for (int i = 0; i < JKPS_MAX_KEYS; i++) {
-		for (int s = JKPS_TRAIL_SEGMENTS - 1; s > 0; s--)
-			ctx->trail[i][s] = ctx->trail[i][s - 1];
-		ctx->trail[i][0] = ctx->keys[i].down ? 1.0f : ctx->trail[i][0] * 0.55f;
+		bool down = ctx->keys[i].down;
+		ctx->press_level[i] = down ? 1.0f : ctx->press_level[i] * 0.55f;
+
+		float max_h = (float)ctx->press_bar_max_height;
+		if (down) {
+			ctx->press_bar_px[i] += (max_h - ctx->press_bar_px[i]) * 0.45f;
+			if (ctx->press_bar_px[i] > max_h)
+				ctx->press_bar_px[i] = max_h;
+		} else {
+			ctx->press_bar_px[i] *= 0.75f;
+			if (ctx->press_bar_px[i] < 0.5f)
+				ctx->press_bar_px[i] = 0.0f;
+		}
 	}
 
 	/* Scroll the KPS graph history: drop the oldest sample, append the
@@ -913,7 +879,12 @@ static void jkps_source_video_tick(void *data, float seconds)
 		p.keys[active].color_pressed = ctx->key_color_pressed[i];
 		p.keys[active].has_custom_skin = ctx->key_skin_idle_loaded[i] || ctx->key_skin_pressed_loaded[i] ||
 						 (active_skin != NULL && i < 4);
-		memcpy(p.keys[active].trail, ctx->trail[i], sizeof(p.keys[active].trail));
+		p.keys[active].press_level = ctx->press_level[i];
+		p.keys[active].press_bar_px = ctx->press_bar_px[i];
+		p.keys[active].use_custom_hold_bar =
+			active_skin != NULL && i < 4 &&
+			(active_skin->hold_piece[jkps_slot_to_dir[i]].valid ||
+			 active_skin->hold_end[jkps_slot_to_dir[i]].valid);
 		slot_to_key[active] = i;
 		active++;
 	}
@@ -927,6 +898,7 @@ static void jkps_source_video_tick(void *data, float seconds)
 	p.key_font_size = ctx->key_font_size;
 	p.corner_radius = ctx->corner_radius;
 	p.show_press_trail = ctx->show_press_trail;
+	p.press_bar_max_height = ctx->press_bar_max_height;
 	p.show_key_labels = ctx->show_key_labels;
 	p.trail_color = ctx->trail_color;
 	p.bars_mode = ctx->bars_mode;
@@ -961,13 +933,38 @@ static void jkps_source_video_tick(void *data, float seconds)
 
 /* obs_source_draw() can only draw a whole texture scaled into a box - it has
  * no source-rectangle support - so atlas noteskin frames (a crop out of one
- * big sheet) need this instead. Draws the `src` pixel rect of `tex` scaled
- * to fill a dst_w x dst_h box at (dst_x, dst_y). */
+ * big sheet) need this instead. Draws the `src` pixel rect of `tex` so the
+ * frame's full *logical* box (frame_w x frame_h - the untrimmed size Sparrow
+ * records for a trimmed frame, equal to w/h when untrimmed) fills a dst_w x
+ * dst_h box at (dst_x, dst_y); the actual stored pixels are positioned/sized
+ * inside that box per frame_x/frame_y, and rotated back upright first if the
+ * pack was exported with rotation (Free Texture Packer's "Starling"/Sparrow
+ * preset - what most Psych Engine noteskins use - can pack frames rotated
+ * 90 deg to save atlas space). Without this, rotated or trimmed frames end
+ * up sideways, squashed, or misaligned instead of just not appearing, which
+ * is what "doesn't render right" for a real-world pack usually turns out to
+ * be. */
 static void jkps_draw_atlas_subregion(gs_texture_t *tex, int dst_x, int dst_y, int dst_w, int dst_h,
 				      const struct jkps_atlas_rect *src)
 {
 	if (!tex || !src->valid || dst_w <= 0 || dst_h <= 0 || src->w <= 0 || src->h <= 0)
 		return;
+
+	int frame_w = src->frame_w > 0 ? src->frame_w : src->w;
+	int frame_h = src->frame_h > 0 ? src->frame_h : src->h;
+
+	/* Size/position of the actual stored (trimmed) pixels, in *display*
+	 * (post-rotation) terms, as a sub-rect of the logical frame box. */
+	int vis_w = src->rotated ? src->h : src->w;
+	int vis_h = src->rotated ? src->w : src->h;
+
+	float scale_x = (float)dst_w / (float)frame_w;
+	float scale_y = (float)dst_h / (float)frame_h;
+
+	float vis_dst_x = (float)dst_x + (float)src->frame_x * scale_x;
+	float vis_dst_y = (float)dst_y + (float)src->frame_y * scale_y;
+	float vis_dst_w = (float)vis_w * scale_x;
+	float vis_dst_h = (float)vis_h * scale_y;
 
 	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
@@ -978,14 +975,125 @@ static void jkps_draw_atlas_subregion(gs_texture_t *tex, int dst_x, int dst_y, i
 
 	while (gs_effect_loop(effect, "Draw")) {
 		gs_matrix_push();
-		gs_matrix_translate3f((float)dst_x, (float)dst_y, 0.0f);
-		gs_matrix_scale3f((float)dst_w / (float)src->w, (float)dst_h / (float)src->h, 1.0f);
+		/* Pivot around the visible rect's center so a 90 deg turn (for
+		 * rotated frames) lands the content back in the same place
+		 * instead of spinning it off to a corner. */
+		gs_matrix_translate3f(vis_dst_x + vis_dst_w * 0.5f, vis_dst_y + vis_dst_h * 0.5f, 0.0f);
+		if (src->rotated) {
+			gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, -1.57079632679f /* -90 deg */);
+			gs_matrix_scale3f(vis_dst_h / (float)src->w, vis_dst_w / (float)src->h, 1.0f);
+		} else {
+			gs_matrix_scale3f(vis_dst_w / (float)src->w, vis_dst_h / (float)src->h, 1.0f);
+		}
+		gs_matrix_translate3f(-(float)src->w * 0.5f, -(float)src->h * 0.5f, 0.0f);
 		gs_draw_sprite_subregion(tex, 0, (uint32_t)src->x, (uint32_t)src->y, (uint32_t)src->w,
 					 (uint32_t)src->h);
 		gs_matrix_pop();
 	}
 
 	gs_blend_state_pop();
+}
+
+/* Same as jkps_draw_atlas_subregion, plus an independent extra 90 deg turn
+ * around the destination box's own center - on top of whatever the frame's
+ * own `rotated` flag already applies. Used for a vertical key layout, where
+ * the press bar grows sideways but the pack's hold art is always drawn for
+ * FNF's native vertical note-scroll orientation, so it needs one more turn
+ * to lie on its side correctly. */
+static void jkps_draw_atlas_tile(gs_texture_t *tex, int dst_x, int dst_y, int dst_w, int dst_h, bool extra_rotate_90,
+				 const struct jkps_atlas_rect *src)
+{
+	if (!extra_rotate_90) {
+		jkps_draw_atlas_subregion(tex, dst_x, dst_y, dst_w, dst_h, src);
+		return;
+	}
+
+	gs_matrix_push();
+	gs_matrix_translate3f((float)dst_x + (float)dst_w * 0.5f, (float)dst_y + (float)dst_h * 0.5f, 0.0f);
+	gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, -1.57079632679f /* -90 deg */);
+	jkps_draw_atlas_subregion(tex, -(dst_h / 2), -(dst_w / 2), dst_h, dst_w, src);
+	gs_matrix_pop();
+}
+
+/* Draws a Funkin' Skin's own hold/sustain-note art - a tiled "hold piece"
+ * capped with a "hold end" - stretched to fill (bar_x, bar_y, bar_w, bar_h)
+ * instead of the flat-color press bar, matching how FNF itself renders long
+ * notes. grows_up: true for a horizontal key row (bar grows upward, flush
+ * against the key at the bottom - the pack's native orientation, no extra
+ * turn needed); false for a vertical key column (bar grows rightward, flush
+ * against the key on the left - needs the extra 90 deg turn above). Either
+ * piece or end (or both) may be invalid; whichever is missing is simply
+ * skipped, e.g. tiling the piece across the full length with no end cap. */
+static void jkps_draw_hold_bar(gs_texture_t *tex, int bar_x, int bar_y, int bar_w, int bar_h, bool grows_up,
+			       const struct jkps_atlas_rect *piece, const struct jkps_atlas_rect *end)
+{
+	if (!tex)
+		return;
+
+	int thickness = grows_up ? bar_w : bar_h; /* fixed axis, matches key_size */
+	int extent = grows_up ? bar_h : bar_w;    /* the axis the bar grows along */
+	if (thickness <= 0 || extent <= 0)
+		return;
+
+	int end_len = 0;
+	if (end->valid && end->frame_w > 0) {
+		float aspect = (float)end->frame_h / (float)end->frame_w;
+		end_len = (int)((float)thickness * aspect + 0.5f);
+		if (end_len > extent)
+			end_len = extent;
+	}
+
+	int tile_len = thickness;
+	if (piece->valid && piece->frame_w > 0) {
+		tile_len = (int)((float)thickness * (float)piece->frame_h / (float)piece->frame_w + 0.5f);
+		if (tile_len < 2)
+			tile_len = 2;
+	}
+
+	int piece_extent = extent - end_len;
+
+	/* drawn=0 is the tile right next to the end cap (farthest from the
+	 * key); a partial leftover tile lands next to the key instead of
+	 * leaving a gap or seam right under the end cap. */
+	if (piece->valid) {
+		int drawn = 0;
+		while (drawn < piece_extent) {
+			int this_len = tile_len;
+			if (drawn + this_len > piece_extent)
+				this_len = piece_extent - drawn;
+
+			int tx, ty, tw, th;
+			if (grows_up) {
+				tw = bar_w;
+				th = this_len;
+				tx = bar_x;
+				ty = bar_y + end_len + drawn;
+			} else {
+				tw = this_len;
+				th = bar_h;
+				tx = bar_x + drawn;
+				ty = bar_y;
+			}
+			jkps_draw_atlas_tile(tex, tx, ty, tw, th, !grows_up, piece);
+			drawn += this_len;
+		}
+	}
+
+	if (end->valid && end_len > 0) {
+		int tx, ty, tw, th;
+		if (grows_up) {
+			tw = bar_w;
+			th = end_len;
+			tx = bar_x;
+			ty = bar_y;
+		} else {
+			tw = end_len;
+			th = bar_h;
+			tx = bar_x + bar_w - end_len;
+			ty = bar_y;
+		}
+		jkps_draw_atlas_tile(tex, tx, ty, tw, th, !grows_up, end);
+	}
 }
 
 static void jkps_source_video_render(void *data, gs_effect_t *effect)
@@ -1004,6 +1112,33 @@ static void jkps_source_video_render(void *data, gs_effect_t *effect)
 			continue;
 
 		bool down = ctx->keys[i].down;
+
+		/* Mirrors jkps-render.c's flat press-bar geometry exactly, but
+		 * only for keys whose lane the active Funkin' Skin actually
+		 * ships hold art for - see use_custom_hold_bar in that file. */
+		if (ctx->show_press_trail && active_skin && i < 4) {
+			enum jkps_noteskin_dir dir = jkps_slot_to_dir[i];
+			const struct jkps_atlas_rect *piece = &active_skin->hold_piece[dir];
+			const struct jkps_atlas_rect *end = &active_skin->hold_end[dir];
+			if (piece->valid || end->valid) {
+				int bar_len = (int)(ctx->press_bar_px[i] + 0.5f);
+				if (bar_len > ctx->press_bar_max_height)
+					bar_len = ctx->press_bar_max_height;
+				if (bar_len > 0) {
+					int bar_x = ctx->key_screen_x[i], bar_y = ctx->key_screen_y[i];
+					if (ctx->vertical_layout)
+						bar_x += ctx->key_size;
+					else
+						bar_y -= bar_len;
+
+					int bar_w = ctx->vertical_layout ? bar_len : ctx->key_size;
+					int bar_h = ctx->vertical_layout ? ctx->key_size : bar_len;
+
+					jkps_draw_hold_bar(active_skin->atlas_img.texture, bar_x, bar_y, bar_w,
+							   bar_h, !ctx->vertical_layout, piece, end);
+				}
+			}
+		}
 
 		/* Atlas noteskin takes priority over the flat per-key images
 		 * below, and only ever applies to slots 0-3 (the ones a

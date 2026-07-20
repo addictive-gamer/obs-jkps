@@ -26,14 +26,27 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 extern "C" {
 #endif
 
-#define JKPS_TRAIL_SEGMENTS 10
 #define JKPS_KPS_GRAPH_SAMPLES 60
 
 struct jkps_render_key {
 	const char *label;
 	bool down;
 	uint64_t total;
-	float trail[JKPS_TRAIL_SEGMENTS]; /* 0..1 intensity, index 0 = closest to the key box */
+
+	/* 0..1, jumps to 1 on press and decays on release - used as the
+	 * bars-mode VU-meter fill level. */
+	float press_level;
+
+	/* Current height (px) of the press bar: grows from 0 toward
+	 * press_bar_max_height while held, shrinks back to 0 on release. */
+	float press_bar_px;
+
+	/* True when the active Funkin' Skin ships hold/sustain art for this
+	 * lane: the caller draws that art (tiled) on top instead, so the
+	 * flat-color bar below is skipped entirely rather than showing
+	 * through underneath it. */
+	bool use_custom_hold_bar;
+
 	uint32_t color_idle;
 	uint32_t color_pressed;
 	bool has_custom_skin; /* if true, the box/label are skipped here; the
@@ -51,9 +64,10 @@ struct jkps_render_params {
 	int key_spacing;
 	int key_font_size;
 	int corner_radius; /* 0 = square corners; up to key_size/2 for a pill/circle look */
-	bool show_press_trail;
+	bool show_press_trail; /* show the growing/shrinking press bar above each key */
 	bool show_key_labels;
-	uint32_t trail_color;
+	uint32_t trail_color; /* press bar color */
+	int press_bar_max_height; /* px cap on how far the press bar can grow */
 	bool bars_mode; /* draw thin equalizer-style bars instead of square boxes */
 
 	bool show_kps_graph;
