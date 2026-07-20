@@ -70,6 +70,7 @@ struct jkps_source_context {
 	bool show_key_labels;
 	uint32_t trail_color;
 	int press_bar_max_height;
+	int press_bar_rise_speed; /* 1..100, % of remaining distance closed per tick (~30/s) */
 	bool bars_mode;
 	bool show_kps_graph;
 	uint32_t kps_graph_color;
@@ -338,6 +339,7 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 	ctx->show_key_labels = obs_data_get_bool(settings, "show_key_labels");
 	ctx->trail_color = (uint32_t)obs_data_get_int(settings, "trail_color");
 	ctx->press_bar_max_height = (int)obs_data_get_int(settings, "press_bar_max_height");
+	ctx->press_bar_rise_speed = (int)obs_data_get_int(settings, "press_bar_rise_speed");
 	ctx->bars_mode = obs_data_get_bool(settings, "bars_mode");
 	ctx->show_kps_graph = obs_data_get_bool(settings, "show_kps_graph");
 	ctx->kps_graph_color = (uint32_t)obs_data_get_int(settings, "kps_graph_color");
@@ -389,6 +391,7 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, "show_key_labels", true);
 	obs_data_set_default_int(settings, "trail_color", 0xFFFFFFFF);
 	obs_data_set_default_int(settings, "press_bar_max_height", 200);
+	obs_data_set_default_int(settings, "press_bar_rise_speed", 15);
 	obs_data_set_default_bool(settings, "bars_mode", false);
 	obs_data_set_default_bool(settings, "show_kps_graph", false);
 	obs_data_set_default_int(settings, "kps_graph_color", 0xFF37B2FF);
@@ -783,6 +786,8 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_properties_add_color_alpha(props, "trail_color", obs_module_text("JkpsSource.TrailColor"));
 	obs_properties_add_int(props, "press_bar_max_height", obs_module_text("JkpsSource.PressBarMaxHeight"), 10, 2000,
 			       1);
+	obs_properties_add_int(props, "press_bar_rise_speed", obs_module_text("JkpsSource.PressBarRiseSpeed"), 1, 100,
+			       1);
 	obs_properties_add_bool(props, "bars_mode", obs_module_text("JkpsSource.BarsMode"));
 	obs_properties_add_bool(props, "show_kps_graph", obs_module_text("JkpsSource.ShowKpsGraph"));
 	obs_properties_add_color_alpha(props, "kps_graph_color", obs_module_text("JkpsSource.KpsGraphColor"));
@@ -868,7 +873,8 @@ static void jkps_source_video_tick(void *data, float seconds)
 
 		float max_h = (float)ctx->press_bar_max_height;
 		if (down) {
-			ctx->press_bar_px[i] += (max_h - ctx->press_bar_px[i]) * 0.45f;
+			float rise = (float)ctx->press_bar_rise_speed / 100.0f;
+			ctx->press_bar_px[i] += (max_h - ctx->press_bar_px[i]) * rise;
 			if (ctx->press_bar_px[i] > max_h)
 				ctx->press_bar_px[i] = max_h;
 		} else {
