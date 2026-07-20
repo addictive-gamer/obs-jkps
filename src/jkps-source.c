@@ -720,8 +720,8 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	 * dropdown (instead of one button per theme) so it sits consistently
 	 * alongside every other "pick one" control in the panel. */
 	obs_property_t *theme_prop = obs_properties_add_list(skins_group, "native_theme",
-							     obs_module_text("JkpsSource.Themes"),
-							     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+							     obs_module_text("JkpsSource.Themes"), OBS_COMBO_TYPE_LIST,
+							     OBS_COMBO_FORMAT_INT);
 	for (size_t i = 0; i < JKPS_THEME_COUNT; i++)
 		obs_property_list_add_int(theme_prop, obs_module_text(jkps_themes[i].locale_key), (long long)i);
 	obs_property_set_modified_callback2(theme_prop, jkps_theme_list_modified, ctx);
@@ -932,10 +932,9 @@ static void jkps_source_video_tick(void *data, float seconds)
 		p.keys[active].float_bar_len = ctx->float_bar_len[i];
 		p.keys[active].float_bar_drift = ctx->float_bar_drift[i];
 		p.keys[active].float_bar_alpha = ctx->float_bar_alpha[i];
-		p.keys[active].use_custom_hold_bar =
-			active_skin != NULL && i < 4 &&
-			(active_skin->hold_piece[jkps_slot_to_dir[i]].valid ||
-			 active_skin->hold_end[jkps_slot_to_dir[i]].valid);
+		p.keys[active].use_custom_hold_bar = active_skin != NULL && i < 4 &&
+						     (active_skin->hold_piece[jkps_slot_to_dir[i]].valid ||
+						      active_skin->hold_end[jkps_slot_to_dir[i]].valid);
 		slot_to_key[active] = i;
 		active++;
 	}
@@ -1192,8 +1191,8 @@ static void jkps_source_video_render(void *data, gs_effect_t *effect)
 					int bar_w = ctx->vertical_layout ? bar_len : ctx->key_size;
 					int bar_h = ctx->vertical_layout ? ctx->key_size : bar_len;
 
-					jkps_draw_hold_bar(active_skin->atlas_img.texture, bar_x, bar_y, bar_w,
-							   bar_h, !ctx->vertical_layout, piece, end);
+					jkps_draw_hold_bar(active_skin->atlas_img.texture, bar_x, bar_y, bar_w, bar_h,
+							   !ctx->vertical_layout, piece, end);
 				}
 			}
 		}
