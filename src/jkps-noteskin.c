@@ -24,6 +24,18 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string.h>
 #include <ctype.h>
 
+/* Only used to sample raw pixels for the recolor-compatibility check below
+ * (gs_image_file_t's GPU texture isn't reliably readable back on the CPU
+ * side once uploaded). STBI_NO_STDIO: file IO goes through os_fopen +
+ * stbi_load_from_memory instead, since stb_image's own fopen path doesn't
+ * reliably handle non-ASCII paths on Windows. STBI_ONLY_PNG: every atlas
+ * pack this plugin reads is a PNG, so there's no reason to build in the
+ * other format decoders. */
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_STDIO
+#define STBI_ONLY_PNG
+#include "stb_image.h"
+
 /* ---- tiny helpers -------------------------------------------------- */
 
 static bool file_exists(const char *path)
@@ -227,16 +239,24 @@ static void fill_atlas_rect(struct jkps_atlas_rect *r, const char *tag, int x, i
 
 /* ---- atlas loading --------------------------------------------------- */
 
-bool jkps_noteskin_load(const char *xml_path, struct jkps_noteskin *out)
+/* Shared XML walk: fills frames/hold_piece/hold_end from xml_path exactly
+ * as jkps_noteskin_load always has. Split out so the recolor-compatibility
+ * check (jkps_noteskin_is_recolor_compatible) can get at the same frame
+ * rects from a properties callback without loading a GPU texture. Returns
+ * the number of classified arrow frames found (0 = not a usable pack). */
+static int jkps_parse_atlas_xml(const char *xml_path, struct jkps_atlas_rect frames[JKPS_DIR_COUNT][JKPS_SKIN_STATE_COUNT],
+				 struct jkps_atlas_rect hold_piece[JKPS_DIR_COUNT], struct jkps_atlas_rect hold_end[JKPS_DIR_COUNT])
 {
-	memset(out, 0, sizeof(*out));
+	memset(frames, 0, sizeof(*frames) * JKPS_DIR_COUNT);
+	memset(hold_piece, 0, sizeof(*hold_piece) * JKPS_DIR_COUNT);
+	memset(hold_end, 0, sizeof(*hold_end) * JKPS_DIR_COUNT);
 
 	if (!xml_path || !xml_path[0] || !ends_with_ci(xml_path, ".xml"))
-		return false;
+		return 0;
 
 	char *xml = jkps_read_text_file(xml_path);
 	if (!xml)
-		return false;
+		return 0;
 
 	int found = 0;
 	const char *p = xml;
@@ -270,11 +290,11 @@ bool jkps_noteskin_load(const char *xml_path, struct jkps_noteskin *out)
 				 * `found` since a pack is still perfectly usable
 				 * without it (the plain press-bar color is the
 				 * fallback). */
-				struct jkps_atlas_rect *r = is_hold_end ? &out->hold_end[dir] : &out->hold_piece[dir];
+				struct jkps_atlas_rect *r = is_hold_end ? &hold_end[dir] : &hold_piece[dir];
 				if (!r->valid)
 					fill_atlas_rect(r, tag, x, y, w, h);
 			} else if (classify_frame(name, &dir, &state)) {
-				struct jkps_atlas_rect *r = &out->frames[dir][state];
+				struct jkps_atlas_rect *r = &frames[dir][state];
 				/* First match wins: packs list animation frames in
 				 * ascending order (0000, 0001, ...), and a static
 				 * overlay only ever needs the first one. */
@@ -291,16 +311,151 @@ bool jkps_noteskin_load(const char *xml_path, struct jkps_noteskin *out)
 	free(xml);
 
 	if (found == 0)
-		return false;
+		return 0;
 
 	/* Let missing states fall back gracefully: confirm -> press -> static,
 	 * so a pack only needs a static frame per lane to work at all. */
 	for (int d = 0; d < JKPS_DIR_COUNT; d++) {
-		if (!out->frames[d][JKPS_SKIN_PRESSED].valid)
-			out->frames[d][JKPS_SKIN_PRESSED] = out->frames[d][JKPS_SKIN_STATIC];
-		if (!out->frames[d][JKPS_SKIN_CONFIRM].valid)
-			out->frames[d][JKPS_SKIN_CONFIRM] = out->frames[d][JKPS_SKIN_PRESSED];
+		if (!frames[d][JKPS_SKIN_PRESSED].valid)
+			frames[d][JKPS_SKIN_PRESSED] = frames[d][JKPS_SKIN_STATIC];
+		if (!frames[d][JKPS_SKIN_CONFIRM].valid)
+			frames[d][JKPS_SKIN_CONFIRM] = frames[d][JKPS_SKIN_PRESSED];
 	}
+
+	return found;
+}
+
+/* Reads a whole file into a malloc'd buffer via os_fopen (not stb_image's
+ * own fopen path, which doesn't reliably handle non-ASCII paths on
+ * Windows - same reason the rest of this file avoids plain fopen). */
+static uint8_t *jkps_read_binary_file(const char *path, size_t *out_size)
+{
+	FILE *f = os_fopen(path, "rb");
+	if (!f)
+		return NULL;
+
+	if (fseek(f, 0, SEEK_END) != 0) {
+		fclose(f);
+		return NULL;
+	}
+	long sz = ftell(f);
+	if (sz <= 0) {
+		fclose(f);
+		return NULL;
+	}
+	fseek(f, 0, SEEK_SET);
+
+	uint8_t *buf = malloc((size_t)sz);
+	if (!buf) {
+		fclose(f);
+		return NULL;
+	}
+
+	size_t read = fread(buf, 1, (size_t)sz, f);
+	fclose(f);
+	if (read != (size_t)sz) {
+		free(buf);
+		return NULL;
+	}
+
+	*out_size = (size_t)sz;
+	return buf;
+}
+
+/* Average color saturation/brightness (both 0..1) of the non-transparent
+ * pixels inside one atlas frame's stored pixel rect (rotation doesn't
+ * matter here - it only affects display orientation, not which source
+ * pixels belong to the frame). Sampled on a coarse grid so a big atlas
+ * sheet costs at most a few hundred pixel reads per frame. Returns false
+ * if the rect is out of bounds or has no usable (visible) pixels to judge,
+ * e.g. it's fully transparent padding. */
+static bool jkps_sample_frame_color(const uint8_t *pixels, int img_w, int img_h, const struct jkps_atlas_rect *r,
+				     float *out_avg_sat, float *out_avg_val)
+{
+	if (!r->valid || r->w <= 0 || r->h <= 0)
+		return false;
+	if (r->x < 0 || r->y < 0 || r->x + r->w > img_w || r->y + r->h > img_h)
+		return false;
+
+	int step_x = r->w > 24 ? r->w / 24 : 1;
+	int step_y = r->h > 24 ? r->h / 24 : 1;
+
+	double sat_sum = 0.0, val_sum = 0.0;
+	int counted = 0;
+
+	for (int y = r->y; y < r->y + r->h; y += step_y) {
+		for (int x = r->x; x < r->x + r->w; x += step_x) {
+			const uint8_t *px = pixels + ((size_t)y * (size_t)img_w + (size_t)x) * 4;
+			if (px[3] < 32) /* skip transparent/near-transparent padding */
+				continue;
+
+			uint8_t r8 = px[0], g8 = px[1], b8 = px[2];
+			uint8_t max_c = r8 > g8 ? (r8 > b8 ? r8 : b8) : (g8 > b8 ? g8 : b8);
+			uint8_t min_c = r8 < g8 ? (r8 < b8 ? r8 : b8) : (g8 < b8 ? g8 : b8);
+
+			sat_sum += max_c > 0 ? (double)(max_c - min_c) / (double)max_c : 0.0;
+			val_sum += (double)max_c / 255.0;
+			counted++;
+		}
+	}
+
+	if (counted == 0)
+		return false;
+
+	*out_avg_sat = (float)(sat_sum / counted);
+	*out_avg_val = (float)(val_sum / counted);
+	return true;
+}
+
+/* A pack meant to be recolored is drawn in shades of gray/white (low
+ * saturation) and isn't just a near-black silhouette - multiplying a
+ * near-black pixel by any tint still looks near-black, so that's excluded
+ * too via a minimum brightness floor. Real pre-colored packs (the
+ * purple/blue/green/red arrows most packs ship, which is most of them)
+ * sit well above the saturation cutoff, so this comfortably tells the two
+ * apart in practice without needing per-pack metadata. */
+#define JKPS_RECOLOR_SAT_MAX 0.18f
+#define JKPS_RECOLOR_VAL_MIN 0.25f
+
+static bool jkps_detect_recolor_compatible(const char *png_path,
+					    const struct jkps_atlas_rect frames[JKPS_DIR_COUNT][JKPS_SKIN_STATE_COUNT])
+{
+	size_t file_size = 0;
+	uint8_t *file_data = jkps_read_binary_file(png_path, &file_size);
+	if (!file_data)
+		return false;
+
+	int img_w = 0, img_h = 0, channels = 0;
+	uint8_t *pixels = stbi_load_from_memory(file_data, (int)file_size, &img_w, &img_h, &channels, 4);
+	free(file_data);
+	if (!pixels)
+		return false;
+
+	int checked = 0;
+	bool all_grayscale = true;
+
+	for (int d = 0; d < JKPS_DIR_COUNT && all_grayscale; d++) {
+		float sat, val;
+		if (!jkps_sample_frame_color(pixels, img_w, img_h, &frames[d][JKPS_SKIN_STATIC], &sat, &val))
+			continue;
+
+		checked++;
+		if (sat > JKPS_RECOLOR_SAT_MAX || val < JKPS_RECOLOR_VAL_MIN)
+			all_grayscale = false;
+	}
+
+	stbi_image_free(pixels);
+
+	return checked > 0 && all_grayscale;
+}
+
+bool jkps_noteskin_is_recolor_compatible(const char *xml_path)
+{
+	struct jkps_atlas_rect frames[JKPS_DIR_COUNT][JKPS_SKIN_STATE_COUNT];
+	struct jkps_atlas_rect hold_piece[JKPS_DIR_COUNT], hold_end[JKPS_DIR_COUNT];
+
+	if (jkps_parse_atlas_xml(xml_path, frames, hold_piece, hold_end) == 0)
+		return false;
 
 	char png_path[JKPS_NOTESKIN_PATH_LEN];
 	strncpy(png_path, xml_path, sizeof(png_path) - 1);
@@ -309,6 +464,26 @@ bool jkps_noteskin_load(const char *xml_path, struct jkps_noteskin *out)
 
 	if (!file_exists(png_path))
 		return false;
+
+	return jkps_detect_recolor_compatible(png_path, frames);
+}
+
+bool jkps_noteskin_load(const char *xml_path, struct jkps_noteskin *out)
+{
+	memset(out, 0, sizeof(*out));
+
+	if (jkps_parse_atlas_xml(xml_path, out->frames, out->hold_piece, out->hold_end) == 0)
+		return false;
+
+	char png_path[JKPS_NOTESKIN_PATH_LEN];
+	strncpy(png_path, xml_path, sizeof(png_path) - 1);
+	png_path[sizeof(png_path) - 1] = '\0';
+	xml_path_to_png(png_path);
+
+	if (!file_exists(png_path))
+		return false;
+
+	out->recolor_compatible = jkps_detect_recolor_compatible(png_path, out->frames);
 
 	gs_image_file_init(&out->atlas_img, png_path);
 	gs_image_file_init_texture(&out->atlas_img);

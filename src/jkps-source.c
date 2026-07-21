@@ -109,6 +109,14 @@ struct jkps_source_context {
 	struct jkps_noteskin funkin_noteskin;
 	bool funkin_noteskin_loaded;
 
+	/* When on, tints each lane's atlas frame (and hold bar) by that
+	 * lane's own key_color_idle/key_color_pressed using a multiply
+	 * blend - see jkps_draw_tint_overlay. Only actually changes anything
+	 * for packs drawn in white/grayscale for this purpose; a
+	 * pre-colored pack just gets multiplied by its own color, which is
+	 * close to a no-op if the tint is left near-white. */
+	bool funkin_recolor;
+
 	uint32_t color_text;
 	uint32_t color_bg;
 
@@ -324,6 +332,8 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 	strncpy(ctx->funkin_folder, funkin_folder, sizeof(ctx->funkin_folder) - 1);
 	ctx->funkin_folder[sizeof(ctx->funkin_folder) - 1] = '\0';
 
+	ctx->funkin_recolor = obs_data_get_bool(settings, "funkin_recolor");
+
 	/* Atlas noteskins are inherently 4-directional (left/down/up/right),
 	 * so picking one locks the layout to the first 4 key slots - Native
 	 * Skins remains the only category that supports 5K-8K. */
@@ -417,6 +427,7 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "native_theme", 0); /* jkps_themes[0] == Classic */
 	obs_data_set_default_string(settings, "funkin_folder", "");
 	obs_data_set_default_string(settings, "funkin_skin_xml", "");
+	obs_data_set_default_bool(settings, "funkin_recolor", false);
 	obs_data_set_default_string(settings, "noteskins_info", obs_module_text("JkpsSource.NoteskinsInfo"));
 }
 
@@ -664,6 +675,28 @@ static bool jkps_funkin_folder_modified(obs_properties_t *props, obs_property_t 
 	UNUSED_PARAMETER(property);
 	jkps_populate_skin_list(obs_properties_get(props, "funkin_skin_xml"),
 				obs_data_get_string(settings, "funkin_folder"));
+	/* The list just got repopulated (and the current selection reset),
+	 * so hide the recolor toggle until jkps_funkin_skin_modified fires
+	 * again for whatever the user actually picks. */
+	obs_property_set_visible(obs_properties_get(props, "funkin_recolor"), false);
+	return true;
+}
+
+/* Shows the recolor toggle only when the currently-selected Funkin' Skin
+ * actually looks grayscale enough to be worth tinting (see
+ * jkps_noteskin_is_recolor_compatible) - a pre-colored pack simply never
+ * gets the option, instead of a toggle that silently does nothing. */
+static bool jkps_funkin_skin_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	bool enabled = obs_data_get_bool(settings, "custom_skins_enabled");
+	long long category = obs_data_get_int(settings, "skin_category");
+	bool show_funkin = enabled && category == JKPS_SKIN_CAT_FUNKIN;
+
+	const char *xml_path = obs_data_get_string(settings, "funkin_skin_xml");
+	bool compatible = show_funkin && xml_path && xml_path[0] && jkps_noteskin_is_recolor_compatible(xml_path);
+
+	obs_property_set_visible(obs_properties_get(props, "funkin_recolor"), compatible);
 	return true;
 }
 
@@ -685,6 +718,10 @@ static bool jkps_skin_controls_modified(obs_properties_t *props, obs_property_t 
 	obs_property_set_visible(obs_properties_get(props, "native_theme"), show_native);
 	obs_property_set_visible(obs_properties_get(props, "funkin_folder"), show_funkin);
 	obs_property_set_visible(obs_properties_get(props, "funkin_skin_xml"), show_funkin);
+
+	const char *xml_path = obs_data_get_string(settings, "funkin_skin_xml");
+	bool recolor_ok = show_funkin && xml_path && xml_path[0] && jkps_noteskin_is_recolor_compatible(xml_path);
+	obs_property_set_visible(obs_properties_get(props, "funkin_recolor"), recolor_ok);
 
 	bool locked_to_4k = enabled && category != JKPS_SKIN_CAT_NATIVE;
 	for (int i = 4; i < JKPS_MAX_KEYS; i++) {
@@ -743,6 +780,14 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 								   obs_module_text("JkpsSource.FunkinSkin"),
 								   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	jkps_populate_skin_list(funkin_skin_prop, ctx ? ctx->funkin_folder : NULL);
+	obs_property_set_modified_callback(funkin_skin_prop, jkps_funkin_skin_modified);
+
+	obs_property_t *funkin_recolor_prop = obs_properties_add_bool(skins_group, "funkin_recolor",
+									obs_module_text("JkpsSource.FunkinRecolor"));
+	obs_property_set_long_description(funkin_recolor_prop, obs_module_text("JkpsSource.FunkinRecolorDesc"));
+	obs_property_set_visible(funkin_recolor_prop, ctx && ctx->skin_category == JKPS_SKIN_CAT_FUNKIN &&
+							       ctx->funkin_noteskin_loaded &&
+							       ctx->funkin_noteskin.recolor_compatible);
 
 	obs_properties_add_group(props, "skins_group", obs_module_text("JkpsSource.NoteskinsGroup"), OBS_GROUP_NORMAL,
 				 skins_group);
@@ -1006,8 +1051,34 @@ static void jkps_source_video_tick(void *data, float seconds)
  * up sideways, squashed, or misaligned instead of just not appearing, which
  * is what "doesn't render right" for a real-world pack usually turns out to
  * be. */
+/* Tints whatever was just drawn into the current dst_w x dst_h quad (in the
+ * caller's already-set-up matrix space) by tint_color, using a multiply
+ * blend: draw a flat, fully-opaque quad of tint_color with blend factors
+ * (DSTCOLOR, ZERO), so result = original_pixel_color * tint_color while the
+ * destination's own alpha (the sprite's actual cutout shape) survives
+ * untouched (alpha's DSTCOLOR factor is itself dst.a, times our quad's
+ * forced-opaque alpha of 1). No custom shader needed - this reuses OBS's
+ * built-in "Solid" effect the same way a plain color-rect draw would.
+ * Only makes sense for packs whose arrow art is white/grayscale to begin
+ * with; a pack that's already pre-colored per lane still renders correctly
+ * with the toggle off (the default). */
+static void jkps_draw_tint_overlay(int w, int h, uint32_t tint_color)
+{
+	if (w <= 0 || h <= 0)
+		return;
+
+	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+	gs_eparam_t *color_param = gs_effect_get_param_by_name(solid, "color");
+	gs_effect_set_color(color_param, tint_color | 0xFF000000);
+
+	gs_blend_function(GS_BLEND_DSTCOLOR, GS_BLEND_ZERO);
+	while (gs_effect_loop(solid, "Solid"))
+		gs_draw_sprite(NULL, 0, (uint32_t)w, (uint32_t)h);
+	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
+}
+
 static void jkps_draw_atlas_subregion(gs_texture_t *tex, int dst_x, int dst_y, int dst_w, int dst_h,
-				      const struct jkps_atlas_rect *src)
+				      const struct jkps_atlas_rect *src, bool tint_enabled, uint32_t tint_color)
 {
 	if (!tex || !src->valid || dst_w <= 0 || dst_h <= 0 || src->w <= 0 || src->h <= 0)
 		return;
@@ -1058,6 +1129,8 @@ static void jkps_draw_atlas_subregion(gs_texture_t *tex, int dst_x, int dst_y, i
 	}
 	gs_matrix_translate3f(-(float)src->w * 0.5f, -(float)src->h * 0.5f, 0.0f);
 	gs_draw_sprite_subregion(tex, 0, (uint32_t)src->x, (uint32_t)src->y, (uint32_t)src->w, (uint32_t)src->h);
+	if (tint_enabled)
+		jkps_draw_tint_overlay(src->w, src->h, tint_color);
 	gs_matrix_pop();
 
 	gs_blend_state_pop();
@@ -1070,17 +1143,17 @@ static void jkps_draw_atlas_subregion(gs_texture_t *tex, int dst_x, int dst_y, i
  * FNF's native vertical note-scroll orientation, so it needs one more turn
  * to lie on its side correctly. */
 static void jkps_draw_atlas_tile(gs_texture_t *tex, int dst_x, int dst_y, int dst_w, int dst_h, bool extra_rotate_90,
-				 const struct jkps_atlas_rect *src)
+				 const struct jkps_atlas_rect *src, bool tint_enabled, uint32_t tint_color)
 {
 	if (!extra_rotate_90) {
-		jkps_draw_atlas_subregion(tex, dst_x, dst_y, dst_w, dst_h, src);
+		jkps_draw_atlas_subregion(tex, dst_x, dst_y, dst_w, dst_h, src, tint_enabled, tint_color);
 		return;
 	}
 
 	gs_matrix_push();
 	gs_matrix_translate3f((float)dst_x + (float)dst_w * 0.5f, (float)dst_y + (float)dst_h * 0.5f, 0.0f);
 	gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, -1.57079632679f /* -90 deg */);
-	jkps_draw_atlas_subregion(tex, -(dst_h / 2), -(dst_w / 2), dst_h, dst_w, src);
+	jkps_draw_atlas_subregion(tex, -(dst_h / 2), -(dst_w / 2), dst_h, dst_w, src, tint_enabled, tint_color);
 	gs_matrix_pop();
 }
 
@@ -1094,7 +1167,8 @@ static void jkps_draw_atlas_tile(gs_texture_t *tex, int dst_x, int dst_y, int ds
  * piece or end (or both) may be invalid; whichever is missing is simply
  * skipped, e.g. tiling the piece across the full length with no end cap. */
 static void jkps_draw_hold_bar(gs_texture_t *tex, int bar_x, int bar_y, int bar_w, int bar_h, bool grows_up,
-			       const struct jkps_atlas_rect *piece, const struct jkps_atlas_rect *end)
+			       const struct jkps_atlas_rect *piece, const struct jkps_atlas_rect *end,
+			       bool tint_enabled, uint32_t tint_color)
 {
 	if (!tex)
 		return;
@@ -1143,7 +1217,7 @@ static void jkps_draw_hold_bar(gs_texture_t *tex, int bar_x, int bar_y, int bar_
 				tx = bar_x + drawn;
 				ty = bar_y;
 			}
-			jkps_draw_atlas_tile(tex, tx, ty, tw, th, !grows_up, piece);
+			jkps_draw_atlas_tile(tex, tx, ty, tw, th, !grows_up, piece, tint_enabled, tint_color);
 			drawn += this_len;
 		}
 	}
@@ -1161,7 +1235,7 @@ static void jkps_draw_hold_bar(gs_texture_t *tex, int bar_x, int bar_y, int bar_
 			tx = bar_x + bar_w - end_len;
 			ty = bar_y;
 		}
-		jkps_draw_atlas_tile(tex, tx, ty, tw, th, !grows_up, end);
+		jkps_draw_atlas_tile(tex, tx, ty, tw, th, !grows_up, end, tint_enabled, tint_color);
 	}
 }
 
@@ -1208,8 +1282,10 @@ static void jkps_source_video_render(void *data, gs_effect_t *effect)
 					int bar_w = ctx->vertical_layout ? bar_len : thickness;
 					int bar_h = ctx->vertical_layout ? thickness : bar_len;
 
+					uint32_t tint = down ? ctx->key_color_pressed[i] : ctx->key_color_idle[i];
+					bool apply_tint = ctx->funkin_recolor && active_skin->recolor_compatible;
 					jkps_draw_hold_bar(active_skin->atlas_img.texture, bar_x, bar_y, bar_w, bar_h,
-							   !ctx->vertical_layout, piece, end);
+							   !ctx->vertical_layout, piece, end, apply_tint, tint);
 				}
 			}
 		}
@@ -1221,8 +1297,11 @@ static void jkps_source_video_render(void *data, gs_effect_t *effect)
 			enum jkps_noteskin_state state = down ? JKPS_SKIN_PRESSED : JKPS_SKIN_STATIC;
 			const struct jkps_atlas_rect *frame = &active_skin->frames[jkps_slot_to_dir[i]][state];
 			if (frame->valid) {
+				uint32_t tint = down ? ctx->key_color_pressed[i] : ctx->key_color_idle[i];
+				bool apply_tint = ctx->funkin_recolor && active_skin->recolor_compatible;
 				jkps_draw_atlas_subregion(active_skin->atlas_img.texture, ctx->key_screen_x[i],
-							  ctx->key_screen_y[i], ctx->key_size, ctx->key_size, frame);
+							  ctx->key_screen_y[i], ctx->key_size, ctx->key_size, frame,
+							  apply_tint, tint);
 				continue;
 			}
 		}

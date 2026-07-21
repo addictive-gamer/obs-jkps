@@ -82,6 +82,15 @@ struct jkps_noteskin {
 	struct jkps_atlas_rect hold_piece[JKPS_DIR_COUNT];
 	struct jkps_atlas_rect hold_end[JKPS_DIR_COUNT];
 
+	/* Set by jkps_noteskin_load via a raw pixel pass (see
+	 * jkps_detect_recolor_compatible in jkps-noteskin.c): true when every
+	 * lane's static/idle frame is grayscale-ish (low color saturation)
+	 * and bright enough to matter, i.e. the pack was drawn white/gray on
+	 * purpose so a game (or this plugin) can tint it - as opposed to a
+	 * pack that's already pre-colored per lane, which this stays false
+	 * for. Gates whether the "recolor" toggle actually does anything. */
+	bool recolor_compatible;
+
 	char source_xml_path[512];
 };
 
@@ -93,6 +102,15 @@ struct jkps_noteskin {
  * noteskin atlas). Must be called between obs_enter_graphics/leave_graphics
  * like any other gs_image_file_t load. */
 bool jkps_noteskin_load(const char *xml_path, struct jkps_noteskin *out);
+
+/* Lightweight version of the same grayscale check jkps_noteskin_load does
+ * internally, usable straight from a properties modified-callback (i.e.
+ * before/without actually loading the pack as the active skin) so the UI
+ * can show or hide the recolor toggle for whatever's currently selected in
+ * the dropdown. Reads pixels via stb_image directly; touches no OBS
+ * graphics state, so it's safe to call outside obs_enter_graphics. Returns
+ * false (not compatible) for anything that fails to load/parse. */
+bool jkps_noteskin_is_recolor_compatible(const char *xml_path);
 
 /* Frees the atlas texture. Must be called within obs_enter_graphics/leave_graphics. */
 void jkps_noteskin_free(struct jkps_noteskin *ns);

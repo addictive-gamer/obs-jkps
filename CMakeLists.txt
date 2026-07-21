@@ -48,6 +48,7 @@ target_sources(
     src/jkps-keynames.h
     src/jkps-noteskin.c
     src/jkps-noteskin.h
+    src/stb_image.h
 )
 
 if(OS_WINDOWS)
