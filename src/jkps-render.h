@@ -28,12 +28,16 @@ extern "C" {
 
 #define JKPS_KPS_GRAPH_SAMPLES 60
 
-/* Max number of just-released bars a single key can have in flight (rising
- * away from the key, fading out) at the same time. Needed because rapid
- * repeated presses on the same key each spawn their own detached remnant -
- * with only one slot, a new tap would stomp/cut off the previous tap's
- * still-fading remnant before it finished its trip. */
-#define JKPS_MAX_FLOAT_BARS 12
+/* Hard upper bound on how many just-released bars a single key can have in
+ * flight (rising away from the key, fading out) at the same time - this
+ * just sizes the arrays below. The actual number of slots actually put to
+ * use is a runtime setting (see press_bar_max_concurrent in
+ * jkps_render_params / the "press_bar_max_concurrent" source setting),
+ * clamped to this cap. Needed because rapid repeated presses on the same
+ * key each spawn their own detached remnant - with only one slot, a new tap
+ * would stomp/cut off the previous tap's still-fading remnant before it
+ * finished its trip. */
+#define JKPS_FLOAT_BARS_CAP 32
 
 struct jkps_render_key {
 	const char *label;
@@ -59,9 +63,9 @@ struct jkps_render_key {
 	 * A pool of these (instead of a single one) so back-to-back taps on
 	 * the same key each get their own independent rise-and-drift-off
 	 * animation rather than a new tap cutting off the previous one. */
-	float float_bar_len[JKPS_MAX_FLOAT_BARS];
-	float float_bar_drift[JKPS_MAX_FLOAT_BARS];
-	float float_bar_alpha[JKPS_MAX_FLOAT_BARS];
+	float float_bar_len[JKPS_FLOAT_BARS_CAP];
+	float float_bar_drift[JKPS_FLOAT_BARS_CAP];
+	float float_bar_alpha[JKPS_FLOAT_BARS_CAP];
 
 	/* True when the active Funkin' Skin ships hold/sustain art for this
 	 * lane: the caller draws that art (tiled) on top instead, so the
@@ -89,10 +93,11 @@ struct jkps_render_params {
 	int corner_radius;     /* 0 = square corners; up to key_size/2 for a pill/circle look */
 	bool show_press_trail; /* show the growing/shrinking press bar above each key */
 	bool show_key_labels;
-	uint32_t trail_color;     /* press bar color */
-	int press_bar_max_height; /* px cap on how far the press bar can grow */
-	int press_bar_width;      /* perpendicular thickness of the press bar, px; 0 = match key_size */
-	bool bars_mode;           /* draw thin equalizer-style bars instead of square boxes */
+	uint32_t trail_color;         /* press bar color */
+	int press_bar_max_height;     /* px cap on how far the press bar can grow */
+	int press_bar_width;          /* perpendicular thickness of the press bar, px; 0 = match key_size */
+	int press_bar_max_concurrent; /* how many independent floating-remnant slots per key to actually draw */
+	bool bars_mode;               /* draw thin equalizer-style bars instead of square boxes */
 
 	bool show_kps_graph;
 	uint32_t kps_graph_color;

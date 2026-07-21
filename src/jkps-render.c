@@ -363,7 +363,11 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 			 * instead of shrinking back down, they keep traveling like a
 			 * released hold-note tail. Independent slots so back-to-back
 			 * taps don't cut each other's animation off. */
-			for (int b = 0; b < JKPS_MAX_FLOAT_BARS; b++) {
+			int max_bars = p->press_bar_max_concurrent > 0 ? p->press_bar_max_concurrent
+								       : JKPS_FLOAT_BARS_CAP;
+			if (max_bars > JKPS_FLOAT_BARS_CAP)
+				max_bars = JKPS_FLOAT_BARS_CAP;
+			for (int b = 0; b < max_bars; b++) {
 				if (p->keys[i].float_bar_len[b] <= 0.5f || p->keys[i].float_bar_alpha[b] <= 0.01f)
 					continue;
 

@@ -70,8 +70,9 @@ struct jkps_source_context {
 	bool show_key_labels;
 	uint32_t trail_color;
 	int press_bar_max_height;
-	int press_bar_width;      /* perpendicular thickness, px; 0 = match key_size */
-	int press_bar_rise_speed; /* 1..100, % of remaining distance closed per tick (~30/s) */
+	int press_bar_width;          /* perpendicular thickness, px; 0 = match key_size */
+	int press_bar_rise_speed;     /* 1..100, % of remaining distance closed per tick (~30/s) */
+	int press_bar_max_concurrent; /* how many independent floating remnants per key, clamped to JKPS_FLOAT_BARS_CAP */
 	bool bars_mode;
 	bool show_kps_graph;
 	uint32_t kps_graph_color;
@@ -83,9 +84,9 @@ struct jkps_source_context {
 	 * taps on the same key each get their own rise-and-drift-off
 	 * animation instead of a new tap stomping the previous one's slot
 	 * before it finished. 0 length = that slot is free. */
-	float float_bar_len[JKPS_MAX_KEYS][JKPS_MAX_FLOAT_BARS];   /* 0 = slot free */
-	float float_bar_drift[JKPS_MAX_KEYS][JKPS_MAX_FLOAT_BARS]; /* px traveled since detaching from the key */
-	float float_bar_alpha[JKPS_MAX_KEYS][JKPS_MAX_FLOAT_BARS]; /* 1..0 fade as it exits the margin */
+	float float_bar_len[JKPS_MAX_KEYS][JKPS_FLOAT_BARS_CAP];   /* 0 = slot free */
+	float float_bar_drift[JKPS_MAX_KEYS][JKPS_FLOAT_BARS_CAP]; /* px traveled since detaching from the key */
+	float float_bar_alpha[JKPS_MAX_KEYS][JKPS_FLOAT_BARS_CAP]; /* 1..0 fade as it exits the margin */
 
 	uint32_t key_color_idle[JKPS_MAX_KEYS];
 	uint32_t key_color_pressed[JKPS_MAX_KEYS];
@@ -357,6 +358,11 @@ static void jkps_source_update(void *data, obs_data_t *settings)
 	ctx->press_bar_max_height = (int)obs_data_get_int(settings, "press_bar_max_height");
 	ctx->press_bar_width = (int)obs_data_get_int(settings, "press_bar_width");
 	ctx->press_bar_rise_speed = (int)obs_data_get_int(settings, "press_bar_rise_speed");
+	ctx->press_bar_max_concurrent = (int)obs_data_get_int(settings, "press_bar_max_concurrent");
+	if (ctx->press_bar_max_concurrent < 1)
+		ctx->press_bar_max_concurrent = 1;
+	if (ctx->press_bar_max_concurrent > JKPS_FLOAT_BARS_CAP)
+		ctx->press_bar_max_concurrent = JKPS_FLOAT_BARS_CAP;
 	ctx->bars_mode = obs_data_get_bool(settings, "bars_mode");
 	ctx->show_kps_graph = obs_data_get_bool(settings, "show_kps_graph");
 	ctx->kps_graph_color = (uint32_t)obs_data_get_int(settings, "kps_graph_color");
@@ -410,6 +416,7 @@ static void jkps_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "press_bar_max_height", 200);
 	obs_data_set_default_int(settings, "press_bar_width", 0);
 	obs_data_set_default_int(settings, "press_bar_rise_speed", 15);
+	obs_data_set_default_int(settings, "press_bar_max_concurrent", 12);
 	obs_data_set_default_bool(settings, "bars_mode", false);
 	obs_data_set_default_bool(settings, "show_kps_graph", false);
 	obs_data_set_default_int(settings, "kps_graph_color", 0xFF37B2FF);
@@ -804,8 +811,7 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_property_t *funkin_skin_prop = obs_properties_add_list(skins_group, "funkin_skin_xml",
 								   obs_module_text("JkpsSource.FunkinSkin"),
 								   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	jkps_populate_skin_list(funkin_skin_prop, ctx ? ctx->funkin_folder : NULL,
-				ctx ? ctx->funkin_skin_xml : NULL);
+	jkps_populate_skin_list(funkin_skin_prop, ctx ? ctx->funkin_folder : NULL, ctx ? ctx->funkin_skin_xml : NULL);
 	obs_property_set_modified_callback(funkin_skin_prop, jkps_funkin_skin_modified);
 
 	obs_property_t *funkin_recolor_prop =
@@ -864,6 +870,10 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_properties_add_int(props, "press_bar_width", obs_module_text("JkpsSource.PressBarWidth"), 0, 300, 1);
 	obs_properties_add_int(props, "press_bar_rise_speed", obs_module_text("JkpsSource.PressBarRiseSpeed"), 1, 100,
 			       1);
+	obs_property_t *max_concurrent_prop =
+		obs_properties_add_int(props, "press_bar_max_concurrent",
+				       obs_module_text("JkpsSource.PressBarMaxConcurrent"), 1, JKPS_FLOAT_BARS_CAP, 1);
+	obs_property_set_long_description(max_concurrent_prop, obs_module_text("JkpsSource.PressBarMaxConcurrentDesc"));
 	obs_properties_add_bool(props, "bars_mode", obs_module_text("JkpsSource.BarsMode"));
 	obs_properties_add_bool(props, "show_kps_graph", obs_module_text("JkpsSource.ShowKpsGraph"));
 	obs_properties_add_color_alpha(props, "kps_graph_color", obs_module_text("JkpsSource.KpsGraphColor"));
@@ -964,7 +974,8 @@ static void jkps_source_video_tick(void *data, float seconds)
 				 * is furthest along (closest to finishing) since
 				 * it's the least noticeable to cut short. */
 				int slot = -1;
-				for (int b = 0; b < JKPS_MAX_FLOAT_BARS; b++) {
+				int active_slots = ctx->press_bar_max_concurrent;
+				for (int b = 0; b < active_slots; b++) {
 					if (ctx->float_bar_len[i][b] <= 0.0f) {
 						slot = b;
 						break;
@@ -972,7 +983,7 @@ static void jkps_source_video_tick(void *data, float seconds)
 				}
 				if (slot < 0) {
 					float best = -1.0f;
-					for (int b = 0; b < JKPS_MAX_FLOAT_BARS; b++) {
+					for (int b = 0; b < active_slots; b++) {
 						float progress = ctx->float_bar_drift[i][b] + ctx->float_bar_len[i][b];
 						if (progress > best) {
 							best = progress;
@@ -988,7 +999,7 @@ static void jkps_source_video_tick(void *data, float seconds)
 		}
 		ctx->press_bar_was_down[i] = down;
 
-		for (int b = 0; b < JKPS_MAX_FLOAT_BARS; b++) {
+		for (int b = 0; b < JKPS_FLOAT_BARS_CAP; b++) {
 			if (ctx->float_bar_len[i][b] <= 0.0f)
 				continue;
 
@@ -1060,6 +1071,7 @@ static void jkps_source_video_tick(void *data, float seconds)
 	p.show_press_trail = ctx->show_press_trail;
 	p.press_bar_max_height = ctx->press_bar_max_height;
 	p.press_bar_width = ctx->press_bar_width;
+	p.press_bar_max_concurrent = ctx->press_bar_max_concurrent;
 	p.show_key_labels = ctx->show_key_labels;
 	p.trail_color = ctx->trail_color;
 	p.bars_mode = ctx->bars_mode;
