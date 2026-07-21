@@ -63,9 +63,9 @@ struct jkps_atlas_rect {
 	 * silently gets wrong, which is the usual reason a real-world pack
 	 * "loads" (found > 0) but still doesn't look right or draws nothing
 	 * useful. */
-	bool rotated;      /* true if this frame is stored rotated 90 deg in the atlas */
-	int frame_x, frame_y;   /* trim offset within the untrimmed logical frame */
-	int frame_w, frame_h;   /* untrimmed logical frame size (>= w/h); equals w/h if untrimmed */
+	bool rotated;         /* true if this frame is stored rotated 90 deg in the atlas */
+	int frame_x, frame_y; /* trim offset within the untrimmed logical frame */
+	int frame_w, frame_h; /* untrimmed logical frame size (>= w/h); equals w/h if untrimmed */
 };
 
 struct jkps_noteskin {

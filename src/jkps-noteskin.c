@@ -244,8 +244,10 @@ static void fill_atlas_rect(struct jkps_atlas_rect *r, const char *tag, int x, i
  * check (jkps_noteskin_is_recolor_compatible) can get at the same frame
  * rects from a properties callback without loading a GPU texture. Returns
  * the number of classified arrow frames found (0 = not a usable pack). */
-static int jkps_parse_atlas_xml(const char *xml_path, struct jkps_atlas_rect frames[JKPS_DIR_COUNT][JKPS_SKIN_STATE_COUNT],
-				 struct jkps_atlas_rect hold_piece[JKPS_DIR_COUNT], struct jkps_atlas_rect hold_end[JKPS_DIR_COUNT])
+static int jkps_parse_atlas_xml(const char *xml_path,
+				struct jkps_atlas_rect frames[JKPS_DIR_COUNT][JKPS_SKIN_STATE_COUNT],
+				struct jkps_atlas_rect hold_piece[JKPS_DIR_COUNT],
+				struct jkps_atlas_rect hold_end[JKPS_DIR_COUNT])
 {
 	memset(frames, 0, sizeof(*frames) * JKPS_DIR_COUNT);
 	memset(hold_piece, 0, sizeof(*hold_piece) * JKPS_DIR_COUNT);
@@ -370,7 +372,7 @@ static uint8_t *jkps_read_binary_file(const char *path, size_t *out_size)
  * if the rect is out of bounds or has no usable (visible) pixels to judge,
  * e.g. it's fully transparent padding. */
 static bool jkps_sample_frame_color(const uint8_t *pixels, int img_w, int img_h, const struct jkps_atlas_rect *r,
-				     float *out_avg_sat, float *out_avg_val)
+				    float *out_avg_sat, float *out_avg_val)
 {
 	if (!r->valid || r->w <= 0 || r->h <= 0)
 		return false;
@@ -418,7 +420,7 @@ static bool jkps_sample_frame_color(const uint8_t *pixels, int img_w, int img_h,
 #define JKPS_RECOLOR_VAL_MIN 0.25f
 
 static bool jkps_detect_recolor_compatible(const char *png_path,
-					    const struct jkps_atlas_rect frames[JKPS_DIR_COUNT][JKPS_SKIN_STATE_COUNT])
+					   const struct jkps_atlas_rect frames[JKPS_DIR_COUNT][JKPS_SKIN_STATE_COUNT])
 {
 	size_t file_size = 0;
 	uint8_t *file_data = jkps_read_binary_file(png_path, &file_size);
@@ -548,8 +550,8 @@ static void basename_noext_into(const char *path, char *out, size_t out_size)
  *   - a folder that flattens several packs together (e.g. a "noteSkins"
  *     folder full of loose xml/png pairs) disambiguates each one with its
  *     xml filename appended (e.g. "noteSkins - 17bucks"). */
-static void jkps_noteskin_collect(const char *dir_path, const char *label_hint,
-				   struct jkps_noteskin_entry *out_entries, int *count, int max_entries, int depth)
+static void jkps_noteskin_collect(const char *dir_path, const char *label_hint, struct jkps_noteskin_entry *out_entries,
+				  int *count, int max_entries, int depth)
 {
 	if (*count >= max_entries || depth > JKPS_NOTESKIN_MAX_SCAN_DEPTH)
 		return;
@@ -623,8 +625,7 @@ static void jkps_noteskin_collect(const char *dir_path, const char *label_hint,
 				strncpy(base_buf, base, sizeof(base_buf) - 1);
 				base_buf[sizeof(base_buf) - 1] = '\0';
 
-				snprintf(out->display_name, sizeof(out->display_name), "%s - %s", label_buf,
-					 base_buf);
+				snprintf(out->display_name, sizeof(out->display_name), "%s - %s", label_buf, base_buf);
 			} else {
 				strncpy(out->display_name, base, sizeof(out->display_name) - 1);
 				out->display_name[sizeof(out->display_name) - 1] = '\0';

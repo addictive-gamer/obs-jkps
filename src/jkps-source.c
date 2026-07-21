@@ -782,12 +782,12 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	jkps_populate_skin_list(funkin_skin_prop, ctx ? ctx->funkin_folder : NULL);
 	obs_property_set_modified_callback(funkin_skin_prop, jkps_funkin_skin_modified);
 
-	obs_property_t *funkin_recolor_prop = obs_properties_add_bool(skins_group, "funkin_recolor",
-									obs_module_text("JkpsSource.FunkinRecolor"));
+	obs_property_t *funkin_recolor_prop =
+		obs_properties_add_bool(skins_group, "funkin_recolor", obs_module_text("JkpsSource.FunkinRecolor"));
 	obs_property_set_long_description(funkin_recolor_prop, obs_module_text("JkpsSource.FunkinRecolorDesc"));
 	obs_property_set_visible(funkin_recolor_prop, ctx && ctx->skin_category == JKPS_SKIN_CAT_FUNKIN &&
-							       ctx->funkin_noteskin_loaded &&
-							       ctx->funkin_noteskin.recolor_compatible);
+							      ctx->funkin_noteskin_loaded &&
+							      ctx->funkin_noteskin.recolor_compatible);
 
 	obs_properties_add_group(props, "skins_group", obs_module_text("JkpsSource.NoteskinsGroup"), OBS_GROUP_NORMAL,
 				 skins_group);
