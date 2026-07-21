@@ -28,6 +28,13 @@ extern "C" {
 
 #define JKPS_KPS_GRAPH_SAMPLES 60
 
+/* Max number of just-released bars a single key can have in flight (rising
+ * away from the key, fading out) at the same time. Needed because rapid
+ * repeated presses on the same key each spawn their own detached remnant -
+ * with only one slot, a new tap would stomp/cut off the previous tap's
+ * still-fading remnant before it finished its trip. */
+#define JKPS_MAX_FLOAT_BARS 12
+
 struct jkps_render_key {
 	const char *label;
 	bool down;
@@ -43,15 +50,18 @@ struct jkps_render_key {
 	 * it detaches instead). */
 	float press_bar_px;
 
-	/* The just-released segment: instead of shrinking back into the key,
-	 * it keeps its height (float_bar_len, frozen at whatever press_bar_px
-	 * was at the moment of release) and drifts away from the key
-	 * (float_bar_drift, growing each tick), fading out (float_bar_alpha,
-	 * 1..0) as it nears/exits the press_bar_max_height margin. len <= 0
-	 * means there's no floating remnant to draw. */
-	float float_bar_len;
-	float float_bar_drift;
-	float float_bar_alpha;
+	/* The just-released segments: instead of shrinking back into the key,
+	 * each one keeps its height (float_bar_len, frozen at whatever
+	 * press_bar_px was at the moment of release) and drifts away from the
+	 * key (float_bar_drift, growing each tick), fading out
+	 * (float_bar_alpha, 1..0) as it nears/exits the press_bar_max_height
+	 * margin. len <= 0 means that slot has no floating remnant to draw.
+	 * A pool of these (instead of a single one) so back-to-back taps on
+	 * the same key each get their own independent rise-and-drift-off
+	 * animation rather than a new tap cutting off the previous one. */
+	float float_bar_len[JKPS_MAX_FLOAT_BARS];
+	float float_bar_drift[JKPS_MAX_FLOAT_BARS];
+	float float_bar_alpha[JKPS_MAX_FLOAT_BARS];
 
 	/* True when the active Funkin' Skin ships hold/sustain art for this
 	 * lane: the caller draws that art (tiled) on top instead, so the

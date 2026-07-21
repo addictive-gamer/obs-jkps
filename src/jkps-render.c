@@ -358,12 +358,17 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 							  p->trail_color, p->corner_radius);
 			}
 
-			/* The just-released remnant: detached from the key, drifting
-			 * further away and fading out - instead of shrinking back
-			 * down, it keeps traveling like a released hold-note tail. */
-			if (p->keys[i].float_bar_len > 0.5f && p->keys[i].float_bar_alpha > 0.01f) {
-				int flen = (int)(p->keys[i].float_bar_len + 0.5f);
-				int fdrift = (int)(p->keys[i].float_bar_drift + 0.5f);
+			/* The just-released remnants: each detached from the key at
+			 * its own moment, drifting further away and fading out -
+			 * instead of shrinking back down, they keep traveling like a
+			 * released hold-note tail. Independent slots so back-to-back
+			 * taps don't cut each other's animation off. */
+			for (int b = 0; b < JKPS_MAX_FLOAT_BARS; b++) {
+				if (p->keys[i].float_bar_len[b] <= 0.5f || p->keys[i].float_bar_alpha[b] <= 0.01f)
+					continue;
+
+				int flen = (int)(p->keys[i].float_bar_len[b] + 0.5f);
+				int fdrift = (int)(p->keys[i].float_bar_drift[b] + 0.5f);
 
 				int fx = x, fy = y;
 				if (p->vertical_layout) {
@@ -379,7 +384,7 @@ bool jkps_render_frame(const struct jkps_render_params *p, uint32_t width, uint3
 
 				uint32_t base = p->trail_color;
 				uint8_t base_a = (uint8_t)((base >> 24) & 0xFF);
-				uint8_t faded_a = (uint8_t)((float)base_a * p->keys[i].float_bar_alpha);
+				uint8_t faded_a = (uint8_t)((float)base_a * p->keys[i].float_bar_alpha[b]);
 				uint32_t faded_color = (base & 0x00FFFFFFu) | ((uint32_t)faded_a << 24);
 
 				fill_rounded_rect(pixels, width, height, fx, fy, fw, fh, faded_color, p->corner_radius);

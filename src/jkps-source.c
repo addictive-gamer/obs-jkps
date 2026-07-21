@@ -79,9 +79,13 @@ struct jkps_source_context {
 	float press_level[JKPS_MAX_KEYS];  /* 0..1, drives bars-mode VU fill */
 	float press_bar_px[JKPS_MAX_KEYS]; /* current press-bar height in px */
 	bool press_bar_was_down[JKPS_MAX_KEYS];
-	float float_bar_len[JKPS_MAX_KEYS];   /* 0 = no floating remnant active */
-	float float_bar_drift[JKPS_MAX_KEYS]; /* px traveled since detaching from the key */
-	float float_bar_alpha[JKPS_MAX_KEYS]; /* 1..0 fade as it exits the margin */
+	/* Pool of independent floating remnants per key, so rapid repeated
+	 * taps on the same key each get their own rise-and-drift-off
+	 * animation instead of a new tap stomping the previous one's slot
+	 * before it finished. 0 length = that slot is free. */
+	float float_bar_len[JKPS_MAX_KEYS][JKPS_MAX_FLOAT_BARS];   /* 0 = slot free */
+	float float_bar_drift[JKPS_MAX_KEYS][JKPS_MAX_FLOAT_BARS]; /* px traveled since detaching from the key */
+	float float_bar_alpha[JKPS_MAX_KEYS][JKPS_MAX_FLOAT_BARS]; /* 1..0 fade as it exits the margin */
 
 	uint32_t key_color_idle[JKPS_MAX_KEYS];
 	uint32_t key_color_pressed[JKPS_MAX_KEYS];
@@ -655,26 +659,47 @@ static bool jkps_theme_list_modified(void *data, obs_properties_t *props, obs_pr
 }
 
 /* (Re)fills a skin-name dropdown by scanning `folder` for packs. Always
- * keeps a "None" entry first so the user can clear the selection. */
-static void jkps_populate_skin_list(obs_property_t *list, const char *folder)
+ * keeps a "None" entry first so the user can clear the selection.
+ *
+ * keep_selected, if non-empty, is the xml path that should remain the
+ * dialog's current selection across this rebuild (normally ctx's already-
+ * applied pick). obs_properties_t rebuilds happen a lot more often than
+ * just "the user touched the folder picker" - any other property with a
+ * modified callback (skin category, enabling custom skins, the theme list,
+ * etc.) forces the whole properties dialog, including this list, to be
+ * rebuilt from scratch. A Qt combo box shows up blank/deselected the
+ * instant its current value isn't present among the freshly rebuilt items
+ * by exact string match, so without this, picking a Funkin' Skin and then
+ * touching almost any other control made the selection appear to vanish.
+ * If the rescan doesn't happen to produce that exact entry (folder
+ * contents changed, filesystem ordering, etc.), it gets appended so the
+ * combo always has something to point its current value at. */
+static void jkps_populate_skin_list(obs_property_t *list, const char *folder, const char *keep_selected)
 {
 	obs_property_list_clear(list);
 	obs_property_list_add_string(list, obs_module_text("JkpsSource.SkinNone"), "");
 
-	if (!folder || !folder[0])
-		return;
+	bool keep_found = !keep_selected || !keep_selected[0];
 
-	struct jkps_noteskin_entry entries[JKPS_NOTESKIN_MAX_ENTRIES];
-	int n = jkps_noteskin_scan_folder(folder, entries, JKPS_NOTESKIN_MAX_ENTRIES);
-	for (int i = 0; i < n; i++)
-		obs_property_list_add_string(list, entries[i].display_name, entries[i].xml_path);
+	if (folder && folder[0]) {
+		struct jkps_noteskin_entry entries[JKPS_NOTESKIN_MAX_ENTRIES];
+		int n = jkps_noteskin_scan_folder(folder, entries, JKPS_NOTESKIN_MAX_ENTRIES);
+		for (int i = 0; i < n; i++) {
+			obs_property_list_add_string(list, entries[i].display_name, entries[i].xml_path);
+			if (!keep_found && strcmp(entries[i].xml_path, keep_selected) == 0)
+				keep_found = true;
+		}
+	}
+
+	if (!keep_found)
+		obs_property_list_add_string(list, keep_selected, keep_selected);
 }
 
 static bool jkps_funkin_folder_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
 {
 	UNUSED_PARAMETER(property);
 	jkps_populate_skin_list(obs_properties_get(props, "funkin_skin_xml"),
-				obs_data_get_string(settings, "funkin_folder"));
+				obs_data_get_string(settings, "funkin_folder"), NULL);
 	/* The list just got repopulated (and the current selection reset),
 	 * so hide the recolor toggle until jkps_funkin_skin_modified fires
 	 * again for whatever the user actually picks. */
@@ -779,7 +804,8 @@ static obs_properties_t *jkps_source_get_properties(void *data)
 	obs_property_t *funkin_skin_prop = obs_properties_add_list(skins_group, "funkin_skin_xml",
 								   obs_module_text("JkpsSource.FunkinSkin"),
 								   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	jkps_populate_skin_list(funkin_skin_prop, ctx ? ctx->funkin_folder : NULL);
+	jkps_populate_skin_list(funkin_skin_prop, ctx ? ctx->funkin_folder : NULL,
+				ctx ? ctx->funkin_skin_xml : NULL);
 	obs_property_set_modified_callback(funkin_skin_prop, jkps_funkin_skin_modified);
 
 	obs_property_t *funkin_recolor_prop =
@@ -929,33 +955,61 @@ static void jkps_source_video_tick(void *data, float seconds)
 				ctx->press_bar_px[i] = max_h;
 		} else {
 			if (ctx->press_bar_was_down[i] && ctx->press_bar_px[i] > 0.5f) {
-				ctx->float_bar_len[i] = ctx->press_bar_px[i];
-				ctx->float_bar_drift[i] = 0.0f;
-				ctx->float_bar_alpha[i] = 1.0f;
+				/* Hand this press off to its own independent
+				 * slot instead of the single shared one, so it
+				 * keeps drifting/fading on its own schedule even
+				 * if the same key gets tapped again right away.
+				 * Prefer a free slot; if every slot is already
+				 * busy (very fast mashing), reuse whichever one
+				 * is furthest along (closest to finishing) since
+				 * it's the least noticeable to cut short. */
+				int slot = -1;
+				for (int b = 0; b < JKPS_MAX_FLOAT_BARS; b++) {
+					if (ctx->float_bar_len[i][b] <= 0.0f) {
+						slot = b;
+						break;
+					}
+				}
+				if (slot < 0) {
+					float best = -1.0f;
+					for (int b = 0; b < JKPS_MAX_FLOAT_BARS; b++) {
+						float progress = ctx->float_bar_drift[i][b] + ctx->float_bar_len[i][b];
+						if (progress > best) {
+							best = progress;
+							slot = b;
+						}
+					}
+				}
+				ctx->float_bar_len[i][slot] = ctx->press_bar_px[i];
+				ctx->float_bar_drift[i][slot] = 0.0f;
+				ctx->float_bar_alpha[i][slot] = 1.0f;
 			}
 			ctx->press_bar_px[i] = 0.0f;
 		}
 		ctx->press_bar_was_down[i] = down;
 
-		if (ctx->float_bar_len[i] > 0.0f) {
+		for (int b = 0; b < JKPS_MAX_FLOAT_BARS; b++) {
+			if (ctx->float_bar_len[i][b] <= 0.0f)
+				continue;
+
 			/* Drift speed: crosses the full margin in ~1.1s at 30
 			 * ticks/sec, independent of how tall the piece is. */
-			ctx->float_bar_drift[i] += max_h * 0.03f;
+			ctx->float_bar_drift[i][b] += max_h * 0.03f;
 
-			float top_edge = ctx->float_bar_drift[i] + ctx->float_bar_len[i];
+			float top_edge = ctx->float_bar_drift[i][b] + ctx->float_bar_len[i][b];
 			if (top_edge >= max_h) {
 				/* Fades out over a distance equal to its own
 				 * height once its leading edge exits the margin,
 				 * so a tall bar (barely tapped) doesn't vanish
 				 * instantly while a short one lingers oddly long. */
-				float fade_span = ctx->float_bar_len[i] > 1.0f ? ctx->float_bar_len[i] : 1.0f;
+				float fade_span = ctx->float_bar_len[i][b] > 1.0f ? ctx->float_bar_len[i][b] : 1.0f;
 				float past = top_edge - max_h;
 				float alpha = 1.0f - past / fade_span;
 				if (alpha <= 0.0f) {
-					ctx->float_bar_len[i] = 0.0f;
-					ctx->float_bar_alpha[i] = 0.0f;
+					ctx->float_bar_len[i][b] = 0.0f;
+					ctx->float_bar_alpha[i][b] = 0.0f;
 				} else {
-					ctx->float_bar_alpha[i] = alpha;
+					ctx->float_bar_alpha[i][b] = alpha;
 				}
 			}
 		}
@@ -985,9 +1039,9 @@ static void jkps_source_video_tick(void *data, float seconds)
 						 (active_skin != NULL && i < 4);
 		p.keys[active].press_level = ctx->press_level[i];
 		p.keys[active].press_bar_px = ctx->press_bar_px[i];
-		p.keys[active].float_bar_len = ctx->float_bar_len[i];
-		p.keys[active].float_bar_drift = ctx->float_bar_drift[i];
-		p.keys[active].float_bar_alpha = ctx->float_bar_alpha[i];
+		memcpy(p.keys[active].float_bar_len, ctx->float_bar_len[i], sizeof(p.keys[active].float_bar_len));
+		memcpy(p.keys[active].float_bar_drift, ctx->float_bar_drift[i], sizeof(p.keys[active].float_bar_drift));
+		memcpy(p.keys[active].float_bar_alpha, ctx->float_bar_alpha[i], sizeof(p.keys[active].float_bar_alpha));
 		p.keys[active].use_custom_hold_bar = active_skin != NULL && i < 4 &&
 						     (active_skin->hold_piece[jkps_slot_to_dir[i]].valid ||
 						      active_skin->hold_end[jkps_slot_to_dir[i]].valid);
